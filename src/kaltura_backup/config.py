@@ -282,7 +282,7 @@ class ConfigLoader:
         Load the [Paths] section.
         """
 
-        section = self._parser["Paths"]
+#        section = self._parser["Paths"]
 
         return PathConfig(
             backup_dir=Path(
