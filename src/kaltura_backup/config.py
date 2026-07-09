@@ -25,7 +25,7 @@ from __future__ import annotations
 from configparser import ConfigParser, NoOptionError
 from dataclasses import dataclass
 from pathlib import Path
-
+from .exceptions import ConfigurationError
 
 # ============================================================================
 # Configuration dataclasses
@@ -112,10 +112,6 @@ class Configuration:
 # ============================================================================
 
 
-class ConfigurationError(ValueError):
-    """
-    Raised when the application configuration is invalid.
-    """
 
 
 # ============================================================================
