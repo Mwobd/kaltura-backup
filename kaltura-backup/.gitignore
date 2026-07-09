@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Runtime
+logs/
+backup/
+reports/
+csv/
+
+# Secrets
+config.ini
+
+# State
+backup_state.json
+
+# OS
+.DS_Store
+Thumbs.db
