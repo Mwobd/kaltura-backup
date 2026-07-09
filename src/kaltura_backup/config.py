@@ -1,28 +1,42 @@
 """
 Configuration management for the Kaltura Backup application.
 
-Reads the INI configuration file, validates all required values and
-returns a strongly typed Configuration object that is used throughout
-the application.
+This module is responsible for:
 
-Author: <your name>
+- Reading the application configuration from config.ini.
+- Validating required sections and values.
+- Converting values to strongly typed dataclasses.
+- Creating required application directories.
+- Returning a single immutable Configuration object that is used
+  throughout the application.
+
+Only this module should access config.ini directly.
+All other modules receive a Configuration instance.
+
+Author:
+    <your name>
+
+Python:
+    >= 3.11
 """
 
 from __future__ import annotations
 
-from configparser import ConfigParser
+from configparser import ConfigParser, NoOptionError
 from dataclasses import dataclass
 from pathlib import Path
 
 
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
+# ============================================================================
+# Configuration dataclasses
+# ============================================================================
 
 
 @dataclass(frozen=True, slots=True)
 class ConnectionConfig:
-    """Kaltura connection settings."""
+    """
+    Kaltura connection configuration.
+    """
 
     partner_id: int
     admin_secret: str
@@ -31,7 +45,9 @@ class ConnectionConfig:
 
 @dataclass(frozen=True, slots=True)
 class PathConfig:
-    """Filesystem paths."""
+    """
+    Application paths.
+    """
 
     backup_dir: Path
     csv_dir: Path
@@ -42,7 +58,9 @@ class PathConfig:
 
 @dataclass(frozen=True, slots=True)
 class DownloadConfig:
-    """Download behaviour."""
+    """
+    Download behaviour.
+    """
 
     workers: int
     retry_count: int
@@ -55,7 +73,9 @@ class DownloadConfig:
 
 @dataclass(frozen=True, slots=True)
 class ExportConfig:
-    """Export options."""
+    """
+    Export options.
+    """
 
     save_metadata: bool
     save_api_responses: bool
@@ -66,7 +86,9 @@ class ExportConfig:
 
 @dataclass(frozen=True, slots=True)
 class LoggingConfig:
-    """Logging configuration."""
+    """
+    Logging configuration.
+    """
 
     level: str
     keep_logs: int
@@ -74,7 +96,9 @@ class LoggingConfig:
 
 @dataclass(frozen=True, slots=True)
 class Configuration:
-    """Complete application configuration."""
+    """
+    Complete application configuration.
+    """
 
     connection: ConnectionConfig
     paths: PathConfig
@@ -83,17 +107,27 @@ class Configuration:
     logging: LoggingConfig
 
 
-# ---------------------------------------------------------------------------
-# Configuration loader
-# ---------------------------------------------------------------------------
+# ============================================================================
+# Exceptions
+# ============================================================================
 
 
-class ConfigurationError(RuntimeError):
-    """Raised when the configuration is invalid."""
+class ConfigurationError(ValueError):
+    """
+    Raised when the application configuration is invalid.
+    """
+
+
+# ============================================================================
+# Configuration Loader
+# ============================================================================
 
 
 class ConfigLoader:
-    """Reads and validates config.ini."""
+    """
+    Reads, validates and converts config.ini into a strongly typed
+    Configuration object.
+    """
 
     REQUIRED_SECTIONS = (
         "Connection",
@@ -103,18 +137,21 @@ class ConfigLoader:
         "Logging",
     )
 
-    def __init__(self, config_file: Path):
-        self._config_file = config_file
+    def __init__(self, config_file: str | Path):
+
+        self._config_file = Path(config_file)
         self._parser = ConfigParser()
+
+    # ---------------------------------------------------------------------
 
     def load(self) -> Configuration:
         """
-        Load and validate the configuration.
+        Read, validate and return the application configuration.
 
-        Returns
-        -------
-        Configuration
-            Fully populated configuration object.
+        Raises
+        ------
+        ConfigurationError
+            If the configuration file is missing or invalid.
         """
 
         if not self._config_file.exists():
@@ -122,11 +159,14 @@ class ConfigLoader:
                 f"Configuration file not found: {self._config_file}"
             )
 
-        self._parser.read(self._config_file, encoding="utf-8")
+        self._parser.read(
+            self._config_file,
+            encoding="utf-8",
+        )
 
         self._validate_sections()
 
-        return Configuration(
+        configuration = Configuration(
             connection=self._load_connection(),
             paths=self._load_paths(),
             download=self._load_download(),
@@ -134,97 +174,295 @@ class ConfigLoader:
             logging=self._load_logging(),
         )
 
-    # ------------------------------------------------------------------
+        self._create_directories(configuration)
+
+        return configuration
+
+    # ---------------------------------------------------------------------
 
     def _validate_sections(self) -> None:
+        """
+        Ensure every required section exists.
+        """
 
         for section in self.REQUIRED_SECTIONS:
+
             if not self._parser.has_section(section):
                 raise ConfigurationError(
                     f"Missing configuration section [{section}]"
                 )
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------
 
-    def _load_connection(self) -> ConnectionConfig:
+    def _require(
+        self,
+        section: str,
+        option: str,
+    ) -> str:
+        """
+        Return a required configuration value.
 
-        section = self._parser["Connection"]
+        Raises
+        ------
+        ConfigurationError
+            If the option is missing or empty.
+        """
 
-        return ConnectionConfig(
-            partner_id=section.getint("PartnerId"),
-            admin_secret=section.get("AdminSecret", "").strip(),
-            service_url=section.get("ServiceUrl", "").strip(),
+        try:
+            value = self._parser.get(
+                section,
+                option,
+            ).strip()
+
+        except NoOptionError as exc:
+            raise ConfigurationError(
+                f"Missing configuration value [{section}] {option}"
+            ) from exc
+
+        if not value:
+            raise ConfigurationError(
+                f"Configuration value [{section}] {option} cannot be empty."
+            )
+
+        return value
+
+    # ---------------------------------------------------------------------
+
+    def _positive_int(
+        self,
+        section: str,
+        option: str,
+        minimum: int = 1,
+        maximum: int | None = None,
+    ) -> int:
+        """
+        Read and validate a positive integer.
+        """
+
+        value = self._parser.getint(
+            section,
+            option,
         )
 
-    # ------------------------------------------------------------------
+        if value < minimum:
+            raise ConfigurationError(
+                f"[{section}] {option} must be >= {minimum}"
+            )
+
+        if maximum is not None and value > maximum:
+            raise ConfigurationError(
+                f"[{section}] {option} must be <= {maximum}"
+            )
+
+        return value
+
+    # ---------------------------------------------------------------------
+    # Section loaders
+    # ---------------------------------------------------------------------
+    def _load_connection(self) -> ConnectionConfig:
+        """
+        Load the [Connection] section.
+        """
+
+        return ConnectionConfig(
+            partner_id=self._positive_int(
+                "Connection",
+                "PartnerId",
+            ),
+            admin_secret=self._require(
+                "Connection",
+                "AdminSecret",
+            ),
+            service_url=self._require(
+                "Connection",
+                "ServiceUrl",
+            ),
+        )
+
+    # ---------------------------------------------------------------------
 
     def _load_paths(self) -> PathConfig:
+        """
+        Load the [Paths] section.
+        """
 
         section = self._parser["Paths"]
 
         return PathConfig(
-            backup_dir=Path(section.get("BackupDir")),
-            csv_dir=Path(section.get("CsvDir")),
-            log_dir=Path(section.get("LogDir")),
-            report_dir=Path(section.get("ReportDir")),
-            state_file=Path(section.get("StateFile")),
+            backup_dir=Path(
+                self._require("Paths", "BackupDir")
+            ).resolve(),
+            csv_dir=Path(
+                self._require("Paths", "CsvDir")
+            ).resolve(),
+            log_dir=Path(
+                self._require("Paths", "LogDir")
+            ).resolve(),
+            report_dir=Path(
+                self._require("Paths", "ReportDir")
+            ).resolve(),
+            state_file=Path(
+                self._require("Paths", "StateFile")
+            ).resolve(),
         )
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------
 
     def _load_download(self) -> DownloadConfig:
+        """
+        Load the [Download] section.
+        """
 
-        section = self._parser["Download"]
+        section = "Download"
 
         return DownloadConfig(
-            workers=section.getint("Workers"),
-            retry_count=section.getint("RetryCount"),
-            retry_delay_seconds=section.getint("RetryDelaySeconds"),
-            timeout=section.getint("Timeout"),
-            skip_older_than_hours=section.getint("SkipOlderThanHours"),
-            resume_downloads=section.getboolean("ResumeDownloads"),
-            verify_checksum=section.getboolean("VerifyChecksum"),
+            workers=self._positive_int(
+                section,
+                "Workers",
+                minimum=1,
+                maximum=4,
+            ),
+            retry_count=self._positive_int(
+                section,
+                "RetryCount",
+                minimum=0,
+            ),
+            retry_delay_seconds=self._positive_int(
+                section,
+                "RetryDelaySeconds",
+            ),
+            timeout=self._positive_int(
+                section,
+                "Timeout",
+            ),
+            skip_older_than_hours=self._positive_int(
+                section,
+                "SkipOlderThanHours",
+            ),
+            resume_downloads=self._parser.getboolean(
+                section,
+                "ResumeDownloads",
+            ),
+            verify_checksum=self._parser.getboolean(
+                section,
+                "VerifyChecksum",
+            ),
         )
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------
 
     def _load_export(self) -> ExportConfig:
+        """
+        Load the [Export] section.
+        """
 
-        section = self._parser["Export"]
+        section = "Export"
 
         return ExportConfig(
-            save_metadata=section.getboolean("SaveMetadata"),
-            save_api_responses=section.getboolean("SaveApiResponses"),
-            save_captions=section.getboolean("SaveCaptions"),
-            save_thumbnails=section.getboolean("SaveThumbnails"),
-            save_attachments=section.getboolean("SaveAttachments"),
+            save_metadata=self._parser.getboolean(
+                section,
+                "SaveMetadata",
+            ),
+            save_api_responses=self._parser.getboolean(
+                section,
+                "SaveApiResponses",
+            ),
+            save_captions=self._parser.getboolean(
+                section,
+                "SaveCaptions",
+            ),
+            save_thumbnails=self._parser.getboolean(
+                section,
+                "SaveThumbnails",
+            ),
+            save_attachments=self._parser.getboolean(
+                section,
+                "SaveAttachments",
+            ),
         )
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------
 
     def _load_logging(self) -> LoggingConfig:
+        """
+        Load the [Logging] section.
+        """
 
-        section = self._parser["Logging"]
+        section = "Logging"
+
+        level = self._require(
+            section,
+            "Level",
+        ).upper()
+
+        valid_levels = {
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR",
+            "CRITICAL",
+        }
+
+        if level not in valid_levels:
+            raise ConfigurationError(
+                f"Invalid logging level '{level}'. "
+                f"Expected one of: {', '.join(sorted(valid_levels))}"
+            )
 
         return LoggingConfig(
-            level=section.get("Level"),
-            keep_logs=section.getint("KeepLogs"),
+            level=level,
+            keep_logs=self._positive_int(
+                section,
+                "KeepLogs",
+            ),
         )
 
+    # ---------------------------------------------------------------------
 
-def load_configuration(config_file: str | Path = "config.ini") -> Configuration:
+    def _create_directories(
+        self,
+        configuration: Configuration,
+    ) -> None:
+        """
+        Create the required application directories.
+
+        Existing directories are left untouched.
+        """
+
+        directories = (
+            configuration.paths.backup_dir,
+            configuration.paths.csv_dir,
+            configuration.paths.log_dir,
+            configuration.paths.report_dir,
+        )
+
+        for directory in directories:
+            directory.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+
+# ============================================================================
+# Public helper
+# ============================================================================
+
+
+def load_configuration(
+    config_file: str | Path = "config.ini",
+) -> Configuration:
     """
-    Convenience function for loading the application configuration.
+    Load the application configuration.
 
     Parameters
     ----------
     config_file:
-        Path to config.ini
+        Path to the configuration file.
 
     Returns
     -------
     Configuration
+        Immutable application configuration.
     """
 
-    loader = ConfigLoader(Path(config_file))
-    return loader.load()
+    return ConfigLoader(config_file).load()
