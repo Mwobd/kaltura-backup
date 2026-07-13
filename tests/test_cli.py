@@ -20,6 +20,13 @@ def test_build_parser_includes_help_text() -> None:
     assert "--config" in help_text
 
 
+def test_build_parser_accepts_dry_run_argument() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["--dry-run"])
+
+    assert args.dry_run is True
+
+
 def test_build_parser_supports_version_argument(capsys) -> None:
     parser = build_parser()
 

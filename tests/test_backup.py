@@ -132,6 +132,59 @@ def test_backup_manager_emits_progress_updates(tmp_path: Path, capsys) -> None:
     assert "progress" in captured.out.lower()
 
 
+def test_backup_manager_uses_configured_worker_count(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    configuration = Configuration(
+        connection=configuration.connection,
+        paths=configuration.paths,
+        download=DownloadConfig(
+            workers=2,
+            retry_count=configuration.download.retry_count,
+            retry_delay_seconds=configuration.download.retry_delay_seconds,
+            timeout=configuration.download.timeout,
+            skip_older_than_hours=configuration.download.skip_older_than_hours,
+            resume_downloads=configuration.download.resume_downloads,
+            verify_checksum=configuration.download.verify_checksum,
+        ),
+        export=configuration.export,
+        logging=configuration.logging,
+    )
+    state_manager = StateManager(configuration)
+    logger = initialize_logger(configuration)
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=state_manager,
+        client_manager=DummyClientManager(),
+        logger=logger,
+    )
+
+    entries = [
+        BackupEntry(entry_id=f"entry-{index}", name="demo", updated_at=1, created_at=1)
+        for index in range(3)
+    ]
+
+    processed = manager.run(entries)
+
+    assert len(processed) == 3
+    assert all(entry.status is BackupStatus.COMPLETED for entry in processed)
+
+
+def test_backup_manager_respects_shutdown_signal(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    state_manager = StateManager(configuration)
+    logger = initialize_logger(configuration)
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=state_manager,
+        client_manager=DummyClientManager(),
+        logger=logger,
+    )
+
+    manager._handle_shutdown_signal(15, None)
+
+    assert manager._should_stop() is True
+
+
 def test_backup_manager_disconnects_client_on_failure(tmp_path: Path) -> None:
     configuration = _make_configuration(tmp_path)
     state_manager = StateManager(configuration)

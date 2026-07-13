@@ -8,6 +8,9 @@ for the backup workflow.
 from __future__ import annotations
 
 import json
+import signal
+import threading
+from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any
 
 from .config import Configuration
@@ -26,14 +29,22 @@ class BackupManager:
         state_manager: StateManager,
         client_manager: Any,
         logger: BackupLogger,
+        dry_run: bool = False,
     ) -> None:
         self._configuration = configuration
         self._state_manager = state_manager
         self._client_manager = client_manager
         self._logger = logger
+        self._dry_run = dry_run
+        self._stop_requested = False
+        self._stop_event = threading.Event()
 
     def run(self, entries: list[BackupEntry] | None = None) -> list[BackupEntry]:
         """Process a batch of entries and persist the resulting state."""
+
+        self._stop_requested = False
+        self._stop_event.clear()
+        self._register_signal_handlers()
 
         self._logger.info(EventId.APPLICATION_START, "Starting backup run")
         self._client_manager.connect()
@@ -43,26 +54,54 @@ class BackupManager:
             total_entries = len(batch)
             processed: list[BackupEntry] = []
 
-            for index, entry in enumerate(batch, start=1):
-                if self._should_stop():
-                    raise BackupCancelled("Backup cancelled")
+            if self._configuration.download.workers > 1:
+                futures = []
+                with ThreadPoolExecutor(max_workers=self._configuration.download.workers) as executor:
+                    for index, entry in enumerate(batch, start=1):
+                        if self._should_stop():
+                            self._logger.warning(EventId.WARNING, "Backup cancelled by shutdown request")
+                            raise BackupCancelled("Backup cancelled")
 
-                if self._should_resume_skip(entry):
-                    self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping completed entry {entry.entry_id}")
-                    existing = self._state_manager.get(entry.entry_id)
-                    if existing is not None:
-                        processed.append(existing)
+                        if self._should_resume_skip(entry):
+                            self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping completed entry {entry.entry_id}")
+                            existing = self._state_manager.get(entry.entry_id)
+                            if existing is not None:
+                                processed.append(existing)
+                            self._emit_progress(index, total_entries, entry.entry_id)
+                            continue
+
+                        futures.append(executor.submit(self._process_entry, entry))
+
+                    done, _ = wait(futures)
+                    for future in done:
+                        result = future.result()
+                        processed.append(result)
+
+                for index, entry in enumerate(batch, start=1):
                     self._emit_progress(index, total_entries, entry.entry_id)
-                    continue
+            else:
+                for index, entry in enumerate(batch, start=1):
+                    if self._should_stop():
+                        self._logger.warning(EventId.WARNING, "Backup cancelled by shutdown request")
+                        raise BackupCancelled("Backup cancelled")
 
-                processed.append(self._process_entry(entry))
-                self._emit_progress(index, total_entries, entry.entry_id)
+                    if self._should_resume_skip(entry):
+                        self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping completed entry {entry.entry_id}")
+                        existing = self._state_manager.get(entry.entry_id)
+                        if existing is not None:
+                            processed.append(existing)
+                        self._emit_progress(index, total_entries, entry.entry_id)
+                        continue
+
+                    processed.append(self._process_entry(entry))
+                    self._emit_progress(index, total_entries, entry.entry_id)
 
             self._write_report(processed)
             self._state_manager.save()
             self._logger.info(EventId.APPLICATION_STOP, "Backup run completed")
             return processed
         finally:
+            self._restore_signal_handlers()
             self._client_manager.disconnect()
 
     def _emit_progress(self, completed: int, total: int, entry_id: str) -> None:
@@ -131,6 +170,13 @@ class BackupManager:
     def _download_entry(self, entry: BackupEntry) -> None:
         """Create the entry backup artifacts and record progress."""
 
+        if self._dry_run:
+            self._logger.info(EventId.APPLICATION_START, f"Dry run: would back up entry {entry.entry_id}")
+            entry.downloads.mark_completed(ArtifactType.MEDIA)
+            self._state_manager.increment_statistic("bytes_downloaded", 1)
+            self._state_manager.increment_statistic("api_calls")
+            return
+
         backup_dir = self._configuration.paths.backup_dir / entry.entry_id
         backup_dir.mkdir(parents=True, exist_ok=True)
 
@@ -179,8 +225,33 @@ class BackupManager:
         self._state_manager.increment_statistic("bytes_downloaded", 1)
         self._state_manager.increment_statistic("api_calls")
 
+    def _register_signal_handlers(self) -> None:
+        """Register signal handlers so interruption requests stop the backup gracefully."""
+
+        try:
+            signal.signal(signal.SIGINT, self._handle_shutdown_signal)
+            signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
+        except ValueError:  # pragma: no cover - occurs outside main thread
+            return
+
+    def _restore_signal_handlers(self) -> None:
+        """Restore the previous signal handlers after the run completes."""
+
+        try:
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        except ValueError:  # pragma: no cover - occurs outside main thread
+            return
+
+    def _handle_shutdown_signal(self, signum: int, _frame: Any) -> None:
+        """Set a shutdown flag so the manager stops on the next safe checkpoint."""
+
+        self._stop_requested = True
+        self._stop_event.set()
+        self._logger.warning(EventId.WARNING, f"Shutdown signal received: {signum}")
+
     def _should_stop(self) -> bool:
-        return False
+        return self._stop_requested or self._stop_event.is_set()
 
     def _should_resume_skip(self, entry: BackupEntry) -> bool:
         if not self._configuration.download.resume_downloads:

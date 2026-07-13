@@ -23,6 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the configuration file (default: %(default)s)",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be processed without writing backup artifacts",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"kaltura-backup {__version__}",
@@ -63,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             state_manager=state_manager,
             client_manager=client_manager,
             logger=logger,
+            dry_run=args.dry_run,
         )
 
         manager.run()
