@@ -61,6 +61,14 @@ class EventId(StrEnum):
 
     WARNING = "KBU-8000"
 
+    CONNECTING = "KBU-1004"
+    CONNECTED = "KBU-1005"
+    DISCONNECTED = "KBU-1006"
+    SESSION_ACQUIRED = "KBU-1007"
+    SESSION_RELEASED = "KBU-1008"
+    SESSION_RENEW = "KBU-1009"
+    API_ERROR = "KBU-1010"
+
     ERROR = "KBU-9000"
     FATAL = "KBU-9001"
 
@@ -246,14 +254,6 @@ class BackupLogger:
     # Logging methods continue in Part 2
     # ------------------------------------------------------------------
 
-
-# ============================================================================
-# Singleton
-# ============================================================================
-
-
-_logger_instance: BackupLogger | None = None
-_logger_lock = Lock()
     def debug(
         self,
         event: EventId,
@@ -367,6 +367,15 @@ _logger_lock = Lock()
             EventId.FATAL,
             message,
         )
+
+
+# ============================================================================
+# Singleton
+# ============================================================================
+
+
+_logger_instance: BackupLogger | None = None
+_logger_lock = Lock()
 
 
 # ============================================================================

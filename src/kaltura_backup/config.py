@@ -41,6 +41,8 @@ class ConnectionConfig:
     partner_id: int
     admin_secret: str
     service_url: str
+    expiry: int = 86400
+    privileges: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +274,16 @@ class ConfigLoader:
             service_url=self._require(
                 "Connection",
                 "ServiceUrl",
+            ),
+            expiry=self._parser.getint(
+                "Connection",
+                "Expiry",
+                fallback=86400,
+            ),
+            privileges=self._parser.get(
+                "Connection",
+                "Privileges",
+                fallback="",
             ),
         )
 

@@ -1,0 +1,42 @@
+# kaltura-backup
+
+A small Python utility for creating Kaltura backups from a local configuration.
+
+## Quick start
+
+1. Create and activate a virtual environment:
+   - `py -3.11 -m venv .venv`
+   - `.venv\Scripts\activate`
+2. Install the package:
+   - `pip install -e .`
+3. Copy the example configuration and adjust it:
+   - `copy config.ini.example config.ini`
+4. Run the tool:
+   - `python -m kaltura_backup.cli --config config.ini`
+
+## Windows Task Scheduler
+
+The repository includes a batch launcher at [run_backup.bat](run_backup.bat) that activates the local virtual environment and starts the backup CLI from the repository root.
+
+To run it from Task Scheduler:
+
+1. Open Task Scheduler and create a new Basic Task.
+2. Set the action to Start a program.
+3. Use these values:
+   - Program/script: `cmd.exe`
+   - Add arguments: `/c "C:\path\to\kaltura-backup\run_backup.bat"`
+   - Start in: `C:\path\to\kaltura-backup`
+4. Configure the task to run with the account that has access to the backup paths and the Kaltura credentials.
+5. Ensure that account can read and write to the backup destination, the log directory, and the repository folder that contains the configuration file.
+6. If the task runs without a user session, make sure the account has access to the local Python installation and that the virtual environment is created for that same account.
+7. Optionally enable Run whether user is logged on or not and set a suitable trigger such as a daily schedule.
+
+If you prefer to invoke the CLI directly, use:
+
+```bat
+python -m kaltura_backup.cli --config config.ini
+```
+
+## Configuration
+
+The main configuration file is [config.ini.example](config.ini.example). Copy it to `config.ini` and update the connection, path, download, export, and logging sections before running the backup.

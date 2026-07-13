@@ -1,0 +1,33 @@
+[Connection]
+PartnerId = 123
+AdminSecret = your-admin-secret
+ServiceUrl = https://www.kaltura.com
+Expiry = 86400
+Privileges = 
+
+[Paths]
+BackupDir = backup
+CsvDir = csv
+LogDir = logs
+ReportDir = reports
+StateFile = backup_state.json
+
+[Download]
+Workers = 1
+RetryCount = 2
+RetryDelaySeconds = 0
+Timeout = 30
+SkipOlderThanHours = 0
+ResumeDownloads = false
+VerifyChecksum = false
+
+[Export]
+SaveMetadata = true
+SaveApiResponses = true
+SaveCaptions = false
+SaveThumbnails = false
+SaveAttachments = false
+
+[Logging]
+Level = INFO
+KeepLogs = 7

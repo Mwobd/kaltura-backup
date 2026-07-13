@@ -509,7 +509,7 @@ class StateManager:
 
     def increment_statistic(
         self,
-        statistic: Statistic,
+        statistic: Statistic | str,
         amount: int = 1,
     ) -> None:
         """
@@ -517,18 +517,23 @@ class StateManager:
         """
 
         with self._lock:
+            statistic_name = (
+                statistic.value
+                if isinstance(statistic, Statistic)
+                else statistic
+            )
 
             if not hasattr(
                 self._statistics,
-                statistic.value,
+                statistic_name,
             ):
                 raise StateError(
-                    f"Unknown statistic '{statistic.value}'"
+                    f"Unknown statistic '{statistic_name}'"
                 )
 
             value = getattr(
                 self._statistics,
-                statistic.value,
+                statistic_name,
             )
 
             if not isinstance(
@@ -536,12 +541,12 @@ class StateManager:
                 int,
             ):
                 raise StateError(
-                    f"Statistic '{statistic.value}' is not numeric."
+                    f"Statistic '{statistic_name}' is not numeric."
                 )
 
             setattr(
                 self._statistics,
-                statistic.value,
+                statistic_name,
                 value + amount,
             )
 

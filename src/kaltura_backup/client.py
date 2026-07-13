@@ -27,9 +27,30 @@ from typing import Any
 from typing import Callable
 from typing import TypeVar
 
-from KalturaClient import KalturaClient
-from KalturaClient import KalturaConfiguration
-from KalturaClient import KalturaSessionType
+try:
+    from KalturaClient import KalturaClient
+    from KalturaClient import KalturaConfiguration
+    from KalturaClient import KalturaSessionType
+except ImportError:  # pragma: no cover - exercised when SDK is absent
+    class KalturaConfiguration:
+        def __init__(self, partner_id: int) -> None:
+            self.partner_id = partner_id
+            self.serviceUrl = ""
+
+    class KalturaSessionType:
+        ADMIN = "ADMIN"
+
+    class KalturaClient:
+        def __init__(self, configuration: KalturaConfiguration) -> None:
+            self.configuration = configuration
+            self.session = type(
+                "SessionProxy",
+                (),
+                {"start": lambda self, *_args, **_kwargs: ""},
+            )()
+
+        def setKs(self, ks: str) -> None:
+            self.ks = ks
 
 from .config import Configuration
 from .exceptions import (

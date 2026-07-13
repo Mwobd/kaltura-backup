@@ -283,59 +283,71 @@ class BackupEntry:
     # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
-    # Serialization
-    # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
         """
-        Convert statistics to a JSON serializable dictionary.
+        Convert the entry into a JSON-serializable dictionary.
         """
 
         data = asdict(self)
 
-        data["started"] = int(
-            self.started.timestamp()
-        )
+        if data["last_backup"] is not None:
+            data["last_backup"] = data["last_backup"].isoformat()
 
-        data["finished"] = (
-            int(self.finished.timestamp())
-            if self.finished
-            else None
-        )
+        for key in (
+            "media_completed",
+            "metadata_completed",
+            "captions_completed",
+            "thumbnails_completed",
+            "attachments_completed",
+            "api_response_completed",
+        ):
+            value = data["downloads"][key]
+            if value is not None:
+                data["downloads"][key] = value.isoformat()
+
+        if data["retry"]["last_attempt"] is not None:
+            data["retry"]["last_attempt"] = data["retry"]["last_attempt"].isoformat()
 
         return data
-    # ------------------------------------------------------------------
+
     @classmethod
     def from_dict(
         cls,
         data: dict[str, Any],
-    ) -> "BackupStatistics":
+    ) -> "BackupEntry":
         """
-        Restore statistics from a JSON dictionary.
+        Restore an entry from a JSON dictionary.
         """
 
-        statistics = cls(**data)
+        entry_data = dict(data)
 
-        if isinstance(statistics.started, (int, float)):
-            statistics.started = datetime.fromtimestamp(
-                statistics.started,
-                UTC,
-            )
+        if isinstance(entry_data.get("status"), str):
+            entry_data["status"] = BackupStatus(entry_data["status"])
 
-        if isinstance(statistics.finished, (int, float)):
-            statistics.finished = datetime.fromtimestamp(
-                statistics.finished,
-                UTC,
-            )
+        downloads_data = entry_data.get("downloads", {})
+        if isinstance(downloads_data, dict):
+            entry_data["downloads"] = DownloadStatus(**downloads_data)
 
-        return statistics
-    # ------------------------------------------------------------------
+        retry_data = entry_data.get("retry", {})
+        if isinstance(retry_data, dict):
+            entry_data["retry"] = RetryInfo(**retry_data)
+
+        entry = cls(**entry_data)
+
+        entry.last_backup = cls._parse_datetime(entry.last_backup)
+        cls._restore_download_dates(entry.downloads)
+        cls._restore_retry_dates(entry.retry)
+
+        return entry
 
     @staticmethod
     def _parse_datetime(
         value: Any,
     ) -> datetime | None:
+        """
+        Convert a datetime-like value to a datetime object.
+        """
 
         if value in (None, ""):
             return None
@@ -345,13 +357,14 @@ class BackupEntry:
 
         return datetime.fromisoformat(value)
 
-    # ------------------------------------------------------------------
-
     @classmethod
     def _restore_download_dates(
         cls,
         downloads: DownloadStatus,
     ) -> None:
+        """
+        Restore nested download timestamps from the serialized form.
+        """
 
         downloads.media_completed = cls._parse_datetime(
             downloads.media_completed
@@ -377,54 +390,18 @@ class BackupEntry:
             downloads.api_response_completed
         )
 
-    # ------------------------------------------------------------------
-
     @classmethod
     def _restore_retry_dates(
         cls,
         retry: RetryInfo,
     ) -> None:
+        """
+        Restore the retry timestamp from the serialized form.
+        """
 
         retry.last_attempt = cls._parse_datetime(
             retry.last_attempt
         )
-
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def _convert_datetime_fields(
-        cls,
-        data: dict[str, Any],
-    ) -> None:
-        """
-        Convert all datetime values to ISO-8601 strings.
-        """
-
-        if data["last_backup"] is not None:
-            data["last_backup"] = (
-                data["last_backup"].isoformat()
-            )
-
-        for key in (
-            "media_completed",
-            "metadata_completed",
-            "captions_completed",
-            "thumbnails_completed",
-            "attachments_completed",
-            "api_response_completed",
-        ):
-
-            value = data["downloads"][key]
-
-            if value is not None:
-                data["downloads"][key] = (
-                    value.isoformat()
-                )
-
-        if data["retry"]["last_attempt"] is not None:
-            data["retry"]["last_attempt"] = (
-                data["retry"]["last_attempt"].isoformat()
-            )
 
 
 # ============================================================================
@@ -525,6 +502,35 @@ class BackupStatistics:
             data["finished"] = self.finished.isoformat()
 
         return data
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+    ) -> "BackupStatistics":
+        """
+        Restore statistics from a JSON dictionary.
+        """
+
+        statistics = cls(**data)
+
+        if isinstance(statistics.started, (int, float)):
+            statistics.started = datetime.fromtimestamp(
+                statistics.started,
+                UTC,
+            )
+
+        if isinstance(statistics.finished, (int, float)):
+            statistics.finished = datetime.fromtimestamp(
+                statistics.finished,
+                UTC,
+            )
+        elif isinstance(statistics.finished, str):
+            statistics.finished = datetime.fromisoformat(
+                statistics.finished
+            )
+
+        return statistics
 
 
 # ============================================================================
