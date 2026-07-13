@@ -38,27 +38,40 @@ class BackupManager:
         self._logger.info(EventId.APPLICATION_START, "Starting backup run")
         self._client_manager.connect()
 
-        batch = entries if entries is not None else self.discover_entries()
-        processed: list[BackupEntry] = []
+        try:
+            batch = entries if entries is not None else self.discover_entries()
+            total_entries = len(batch)
+            processed: list[BackupEntry] = []
 
-        for entry in batch:
-            if self._should_stop():
-                raise BackupCancelled("Backup cancelled")
+            for index, entry in enumerate(batch, start=1):
+                if self._should_stop():
+                    raise BackupCancelled("Backup cancelled")
 
-            if self._should_resume_skip(entry):
-                self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping completed entry {entry.entry_id}")
-                existing = self._state_manager.get(entry.entry_id)
-                if existing is not None:
-                    processed.append(existing)
-                continue
+                if self._should_resume_skip(entry):
+                    self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping completed entry {entry.entry_id}")
+                    existing = self._state_manager.get(entry.entry_id)
+                    if existing is not None:
+                        processed.append(existing)
+                    self._emit_progress(index, total_entries, entry.entry_id)
+                    continue
 
-            processed.append(self._process_entry(entry))
+                processed.append(self._process_entry(entry))
+                self._emit_progress(index, total_entries, entry.entry_id)
 
-        self._write_report(processed)
-        self._state_manager.save()
-        self._client_manager.disconnect()
-        self._logger.info(EventId.APPLICATION_STOP, "Backup run completed")
-        return processed
+            self._write_report(processed)
+            self._state_manager.save()
+            self._logger.info(EventId.APPLICATION_STOP, "Backup run completed")
+            return processed
+        finally:
+            self._client_manager.disconnect()
+
+    def _emit_progress(self, completed: int, total: int, entry_id: str) -> None:
+        """Print a lightweight progress update for the current backup run."""
+
+        if total <= 0:
+            return
+
+        print(f"Progress: {completed}/{total} entries processed ({entry_id})", flush=True)
 
     def _process_entry(self, entry: BackupEntry) -> BackupEntry:
         """Process one entry and update the persistent state."""

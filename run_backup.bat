@@ -8,5 +8,5 @@ if exist .venv\Scripts\activate.bat (
     echo Virtual environment not found at .venv\Scripts\activate.bat
     exit /b 1
 )
-python -m kaltura_backup.cli --config config.ini
+python -m kaltura_backup --config config.ini
 exit /b %ERRORLEVEL%

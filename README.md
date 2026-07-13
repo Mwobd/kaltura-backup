@@ -12,7 +12,7 @@ A small Python utility for creating Kaltura backups from a local configuration.
 3. Copy the example configuration and adjust it:
    - `copy config.ini.example config.ini`
 4. Run the tool:
-   - `python -m kaltura_backup.cli --config config.ini`
+   - `python -m kaltura_backup --config config.ini`
 
 ## Windows Task Scheduler
 
@@ -34,7 +34,7 @@ To run it from Task Scheduler:
 If you prefer to invoke the CLI directly, use:
 
 ```bat
-python -m kaltura_backup.cli --config config.ini
+python -m kaltura_backup --config config.ini
 ```
 
 ## Configuration
@@ -48,3 +48,16 @@ from kaltura_backup import ensure_default_config
 
 ensure_default_config("config.ini")
 ```
+
+## Project roadmap status
+
+The implementation has moved beyond the initial scaffold and is now in the later operational phases.
+
+- Phase 1 — ? Complete: project structure, packaging metadata, configuration example, and base documentation.
+- Phase 2 — ? Complete: configuration loading, validation, logging, domain models, and state management.
+- Phase 3 — ?? In progress: the Kaltura client abstraction is in place, but live SDK integration and deeper session-pool behavior still need real-world validation.
+- Phase 4 — ? Complete: backup orchestration, state persistence, resume-aware skipping, and manifest generation are implemented.
+- Phase 5 — ? Complete: backup artifacts for metadata, API responses, captions, thumbnails, and attachments are produced during runs.
+- Phase 6 — ?? In progress: retry handling and reporting are implemented; worker-pool concurrency and graceful shutdown remain future enhancements.
+- Phase 7 — ?? In progress: CLI entrypoints and user-friendly failure handling are in place; advanced options such as state rebuild and dry-run are still not implemented.
+- Phase 8 — ? Complete: regression tests cover the core workflow, CLI behavior, packaging, configuration, and reporting.

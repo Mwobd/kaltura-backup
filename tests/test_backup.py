@@ -112,3 +112,57 @@ def test_backup_manager_writes_artifacts_and_supports_resume(tmp_path: Path) -> 
     assert (backup_dir / "manifest.json").exists()
     assert (backup_dir / "metadata.json").exists()
     assert (backup_dir / "api_response.json").exists()
+
+
+def test_backup_manager_emits_progress_updates(tmp_path: Path, capsys) -> None:
+    configuration = _make_configuration(tmp_path)
+    state_manager = StateManager(configuration)
+    logger = initialize_logger(configuration)
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=state_manager,
+        client_manager=DummyClientManager(),
+        logger=logger,
+    )
+
+    entry = BackupEntry(entry_id="entry-4", name="demo", updated_at=1, created_at=1)
+    manager.run([entry])
+
+    captured = capsys.readouterr()
+    assert "progress" in captured.out.lower()
+
+
+def test_backup_manager_disconnects_client_on_failure(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    state_manager = StateManager(configuration)
+    logger = initialize_logger(configuration)
+
+    class FailingClientManager(DummyClientManager):
+        def __init__(self) -> None:
+            self.disconnect_calls = 0
+
+        def connect(self) -> None:
+            return None
+
+        def disconnect(self) -> None:
+            self.disconnect_calls += 1
+
+        def get_entry(self, entry_id: str):
+            raise RuntimeError("boom")
+
+    client_manager = FailingClientManager()
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=state_manager,
+        client_manager=client_manager,
+        logger=logger,
+    )
+
+    entry = BackupEntry(entry_id="entry-3", name="demo", updated_at=1, created_at=1)
+
+    try:
+        manager.run([entry])
+    except RuntimeError:
+        pass
+
+    assert client_manager.disconnect_calls == 1
