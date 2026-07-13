@@ -180,15 +180,33 @@ class BackupManager:
         report_dir = self._configuration.paths.report_dir
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / "backup_report.json"
-        report_path.write_text(
-            json.dumps(
+
+        report_payload = {
+            "completed": sum(1 for entry in entries if entry.status is BackupStatus.COMPLETED),
+            "failed": sum(1 for entry in entries if entry.status is BackupStatus.FAILED),
+            "count": len(entries),
+            "entries": [
                 {
-                    "completed": sum(1 for entry in entries if entry.status is BackupStatus.COMPLETED),
-                    "failed": sum(1 for entry in entries if entry.status is BackupStatus.FAILED),
-                    "count": len(entries),
-                },
-                indent=2,
-            ),
+                    "entry_id": entry.entry_id,
+                    "name": entry.name,
+                    "status": entry.status.value,
+                    "last_error": entry.last_error,
+                    "downloads": {
+                        "media": entry.downloads.media,
+                        "metadata": entry.downloads.metadata,
+                        "captions": entry.downloads.captions,
+                        "thumbnails": entry.downloads.thumbnails,
+                        "attachments": entry.downloads.attachments,
+                        "api_response": entry.downloads.api_response,
+                    },
+                    "retry_count": entry.retry.count,
+                }
+                for entry in entries
+            ],
+        }
+
+        report_path.write_text(
+            json.dumps(report_payload, indent=2),
             encoding="utf-8",
         )
 
