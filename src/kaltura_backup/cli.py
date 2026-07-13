@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
+from . import __version__
 from .backup import BackupManager
 from .config import load_configuration
 from .exceptions import BackupError, ConfigurationError
@@ -12,8 +13,20 @@ from .state import StateManager
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Kaltura backup workflow")
-    parser.add_argument("--config", default="config.ini", help="Path to the configuration file")
+    parser = argparse.ArgumentParser(
+        description="Run the Kaltura backup workflow",
+        epilog="Use --config to point to a specific configuration file.",
+    )
+    parser.add_argument(
+        "--config",
+        default="config.ini",
+        help="Path to the configuration file (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"kaltura-backup {__version__}",
+    )
     return parser
 
 
@@ -24,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         configuration = load_configuration(Path(args.config))
         logger = initialize_logger(configuration)
+        print(f"Starting Kaltura backup using configuration: {args.config}")
         state_manager = StateManager(configuration)
         state_manager.load()
 

@@ -39,4 +39,12 @@ python -m kaltura_backup.cli --config config.ini
 
 ## Configuration
 
-The main configuration file is [config.ini.example](config.ini.example). Copy it to `config.ini` and update the connection, path, download, export, and logging sections before running the backup.
+The main configuration file is [config.ini.example](config.ini.example). If no config file is present, the application will create a default [config.ini](config.ini) for you on first run so you can adjust the connection and path settings before the next execution.
+
+You can also bootstrap it explicitly from Python:
+
+```python
+from kaltura_backup import ensure_default_config
+
+ensure_default_config("config.ini")
+```

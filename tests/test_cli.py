@@ -12,6 +12,28 @@ def test_build_parser_accepts_config_argument() -> None:
     assert args.config == "custom.ini"
 
 
+def test_build_parser_includes_help_text() -> None:
+    parser = build_parser()
+    help_text = parser.format_help()
+
+    assert "Run the Kaltura backup workflow" in help_text
+    assert "--config" in help_text
+
+
+def test_build_parser_supports_version_argument(capsys) -> None:
+    parser = build_parser()
+
+    try:
+        parser.parse_args(["--version"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("Expected SystemExit for --version")
+
+    captured = capsys.readouterr()
+    assert "kaltura-backup" in captured.out
+
+
 def test_main_returns_error_code_for_missing_config(tmp_path: Path, capsys) -> None:
     missing_config = tmp_path / "missing.ini"
 
