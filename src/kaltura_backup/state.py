@@ -322,19 +322,26 @@ class StateManager:
         )
 
         if self._statistics.finished:
+            finished_value = self._statistics.finished
 
-            self._statistics.finished = (
-                datetime.fromtimestamp(
-                    int(
-                        self._statistics.finished
-                    ),
+            if isinstance(finished_value, datetime):
+                self._statistics.finished = finished_value
+            elif isinstance(finished_value, (int, float)):
+                self._statistics.finished = datetime.fromtimestamp(
+                    int(finished_value),
                     UTC,
                 )
-                if self._statistics.finished.isdigit()
-                else datetime.fromisoformat(
-                    self._statistics.finished
+            elif isinstance(finished_value, str):
+                self._statistics.finished = (
+                    datetime.fromtimestamp(
+                        int(finished_value),
+                        UTC,
+                    )
+                    if finished_value.isdigit()
+                    else datetime.fromisoformat(finished_value)
                 )
-                )
+            else:
+                self._statistics.finished = None
 
         self._entries.clear()
 
