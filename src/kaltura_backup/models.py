@@ -58,6 +58,25 @@ class ArtifactType(StrEnum):
     ATTACHMENTS = "attachments"
     API_RESPONSE = "api_response"
 
+class Statistic(StrEnum):
+    ENTRIES_DISCOVERED = "entries_discovered"
+    ENTRIES_PROCESSED = "entries_processed"
+    ENTRIES_COMPLETED = "entries_completed"
+    ENTRIES_SKIPPED = "entries_skipped"
+    ENTRIES_FAILED = "entries_failed"
+    ENTRIES_RETRIED = "entries_retried"
+
+    MEDIA_DOWNLOADED = "media_downloaded"
+    METADATA_WRITTEN = "metadata_written"
+    CAPTIONS_DOWNLOADED = "captions_downloaded"
+    THUMBNAILS_DOWNLOADED = "thumbnails_downloaded"
+    ATTACHMENTS_DOWNLOADED = "attachments_downloaded"
+
+    API_RESPONSES_SAVED = "api_responses_saved"
+
+    BYTES_DOWNLOADED = "bytes_downloaded"
+
+    API_CALLS = "api_calls"
 
 # ============================================================================
 # Download status
@@ -270,47 +289,47 @@ class BackupEntry:
 
     def to_dict(self) -> dict[str, Any]:
         """
-        Convert the BackupEntry into a JSON-serializable dictionary.
+        Convert statistics to a JSON serializable dictionary.
         """
 
         data = asdict(self)
 
-        self._convert_datetime_fields(data)
+        data["started"] = int(
+            self.started.timestamp()
+        )
+
+        data["finished"] = (
+            int(self.finished.timestamp())
+            if self.finished
+            else None
+        )
 
         return data
-
     # ------------------------------------------------------------------
-
     @classmethod
     def from_dict(
         cls,
         data: dict[str, Any],
-    ) -> "BackupEntry":
+    ) -> "BackupStatistics":
         """
-        Recreate a BackupEntry from a dictionary.
+        Restore statistics from a JSON dictionary.
         """
 
-        downloads = DownloadStatus(**data.pop("downloads"))
-        retry = RetryInfo(**data.pop("retry"))
+        statistics = cls(**data)
 
-        entry = cls(
-            downloads=downloads,
-            retry=retry,
-            **data,
-        )
+        if isinstance(statistics.started, (int, float)):
+            statistics.started = datetime.fromtimestamp(
+                statistics.started,
+                UTC,
+            )
 
-        entry.status = BackupStatus(entry.status)
+        if isinstance(statistics.finished, (int, float)):
+            statistics.finished = datetime.fromtimestamp(
+                statistics.finished,
+                UTC,
+            )
 
-        entry.last_backup = cls._parse_datetime(
-            entry.last_backup
-        )
-
-        cls._restore_download_dates(entry.downloads)
-
-        cls._restore_retry_dates(entry.retry)
-
-        return entry
-
+        return statistics
     # ------------------------------------------------------------------
 
     @staticmethod
