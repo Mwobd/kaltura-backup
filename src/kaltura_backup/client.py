@@ -28,9 +28,9 @@ from typing import Callable
 from typing import TypeVar
 
 try:
-    from KalturaClient import KalturaClient
-    from KalturaClient import KalturaConfiguration
-    from KalturaClient import KalturaSessionType
+    from KalturaClient import KalturaClient  # type: ignore[import-not-found]
+    from KalturaClient import KalturaConfiguration  # type: ignore[import-not-found]
+    from KalturaClient import KalturaSessionType  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - exercised when SDK is absent
     class KalturaConfiguration:
         def __init__(self, partner_id: int) -> None:
@@ -60,7 +60,6 @@ from .exceptions import (
     RetryExceededError,
     RetryableError,
     SessionExpiredError,
-    SessionPoolExhaustedError,
     TimeoutError,
 )
 
@@ -481,8 +480,8 @@ class KalturaClientManager:
     @retryable
     def list_entries(
         self,
-        filter_object: Any,
-        pager: Any,
+        filter_object: Any = None,
+        pager: Any = None,
     ) -> Any:
         """
         Retrieve a page of entries.
