@@ -27,6 +27,41 @@ from dataclasses import dataclass
 from pathlib import Path
 from .exceptions import ConfigurationError
 
+DEFAULT_CONFIG_TEMPLATE = """[Connection]
+PartnerId = 123
+AdminSecret = your-admin-secret
+ServiceUrl = https://www.kaltura.com
+Expiry = 86400
+Privileges = 
+
+[Paths]
+BackupDir = backup
+CsvDir = csv
+LogDir = logs
+ReportDir = reports
+StateFile = backup_state.json
+
+[Download]
+Workers = 1
+RetryCount = 2
+RetryDelaySeconds = 0
+Timeout = 30
+SkipOlderThanHours = 0
+ResumeDownloads = false
+VerifyChecksum = false
+
+[Export]
+SaveMetadata = true
+SaveApiResponses = true
+SaveCaptions = false
+SaveThumbnails = false
+SaveAttachments = false
+
+[Logging]
+Level = INFO
+KeepLogs = 7
+"""
+
 # ============================================================================
 # Configuration dataclasses
 # ============================================================================
@@ -473,4 +508,28 @@ def load_configuration(
         Immutable application configuration.
     """
 
+    if not Path(config_file).exists():
+        ensure_default_config(config_file)
+
     return ConfigLoader(config_file).load()
+
+
+def ensure_default_config(
+    config_file: str | Path = "config.ini",
+) -> bool:
+    """
+    Create a default configuration file if one does not already exist.
+
+    Returns
+    -------
+    bool
+        True when a new file was created, False otherwise.
+    """
+
+    config_path = Path(config_file)
+
+    if config_path.exists():
+        return False
+
+    config_path.write_text(DEFAULT_CONFIG_TEMPLATE, encoding="utf-8")
+    return True
