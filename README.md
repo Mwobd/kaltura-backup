@@ -14,6 +14,12 @@ A small Python utility for creating Kaltura backups from a local configuration.
 4. Run the tool:
    - `python -m kaltura_backup --config config.ini`
 
+To retry only entries that were previously marked as failed in the saved state, use:
+
+```bat
+python -m kaltura_backup --config config.ini --retry-failed
+```
+
 ## Windows Task Scheduler
 
 The repository includes a batch launcher at [run_backup.bat](run_backup.bat) that activates the local virtual environment and starts the backup CLI from the repository root.
@@ -59,5 +65,5 @@ The implementation has moved beyond the initial scaffold and is now in the later
 - Phase 4 — ? Complete: backup orchestration, state persistence, resume-aware skipping, and manifest generation are implemented.
 - Phase 5 — ? Complete: backup artifacts for metadata, API responses, captions, thumbnails, and attachments are produced during runs.
 - Phase 6 — ?? In progress: retry handling and reporting are implemented; worker-pool concurrency and graceful shutdown remain future enhancements.
-- Phase 7 — ?? In progress: CLI entrypoints and user-friendly failure handling are in place; advanced options such as state rebuild and dry-run are still not implemented.
+- Phase 7 — ?? In progress: CLI entrypoints, user-friendly failure handling, dry-run, and retrying previously failed entries are now implemented; state rebuild remains a future enhancement.
 - Phase 8 — ? Complete: regression tests cover the core workflow, CLI behavior, packaging, configuration, and reporting.

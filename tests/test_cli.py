@@ -27,6 +27,13 @@ def test_build_parser_accepts_dry_run_argument() -> None:
     assert args.dry_run is True
 
 
+def test_build_parser_accepts_retry_failed_argument() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["--retry-failed"])
+
+    assert args.retry_failed is True
+
+
 def test_build_parser_supports_version_argument(capsys) -> None:
     parser = build_parser()
 

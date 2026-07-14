@@ -9,6 +9,7 @@ from .backup import BackupManager
 from .config import load_configuration
 from .exceptions import BackupError, ConfigurationError
 from .logging_utils import initialize_logger
+from .models import BackupStatus
 from .state import StateManager
 
 
@@ -26,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Show what would be processed without writing backup artifacts",
+    )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Retry only entries that were previously marked as failed in the saved state",
     )
     parser.add_argument(
         "--version",
@@ -71,7 +77,18 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
 
-        manager.run()
+        if args.retry_failed:
+            failed_entries = [
+                entry
+                for entry in state_manager.entries.values()
+                if entry.status is BackupStatus.FAILED
+            ]
+            if not failed_entries:
+                print("No failed entries found in state to retry.")
+                return 0
+            manager.run(failed_entries)
+        else:
+            manager.run()
         return 0
     except ConfigurationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
