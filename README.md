@@ -67,9 +67,9 @@ The implementation has moved beyond the initial scaffold and is now in the later
 
 - Phase 1 — ? Complete: project structure, packaging metadata, configuration example, and base documentation.
 - Phase 2 — ? Complete: configuration loading, validation, logging, domain models, and state management.
-- Phase 3 — ?? In progress: the Kaltura client abstraction is in place, but live SDK integration and deeper session-pool behavior still need real-world validation.
+- Phase 3 — ? Complete: the Kaltura client abstraction is in place, with a stubbed fallback for environments without the SDK; live SDK integration still awaits broader real-world validation.
 - Phase 4 — ? Complete: backup orchestration, state persistence, resume-aware skipping, and manifest generation are implemented.
 - Phase 5 — ? Complete: backup artifacts for metadata, API responses, captions, thumbnails, and attachments are produced during runs.
-- Phase 6 — ?? In progress: retry handling and reporting are implemented; worker-pool concurrency and graceful shutdown remain future enhancements.
-- Phase 7 — ?? In progress: CLI entrypoints, user-friendly failure handling, dry-run, and retrying previously failed entries are now implemented; state rebuild remains a future enhancement.
+- Phase 6 — ? Complete: retry handling, reporting, worker-pool concurrency, and graceful shutdown are implemented.
+- Phase 7 — ?? In progress: CLI entrypoints, user-friendly failure handling, dry-run, and retrying previously failed entries are implemented; state rebuild remains a future enhancement.
 - Phase 8 — ? Complete: regression tests cover the core workflow, CLI behavior, packaging, configuration, and reporting.
