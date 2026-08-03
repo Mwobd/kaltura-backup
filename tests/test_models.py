@@ -32,3 +32,18 @@ def test_backup_statistics_from_dict_handles_strings() -> None:
 
     assert restored.entries_completed == 2
     assert restored.bytes_downloaded == 42
+    assert restored.started.isoformat() == payload["started"]
+
+
+def test_backup_statistics_from_dict_handles_iso_string_started() -> None:
+    payload = {
+        "entries_completed": 2,
+        "bytes_downloaded": 42,
+        "started": "2026-08-03T15:10:10+00:00",
+    }
+
+    restored = BackupStatistics.from_dict(payload)
+
+    assert restored.entries_completed == 2
+    assert restored.bytes_downloaded == 42
+    assert restored.started.isoformat() == "2026-08-03T15:10:10+00:00"

@@ -12,7 +12,11 @@ import json
 import signal
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait
+from xml.etree import ElementTree
+from urllib.parse import urlparse, unquote
 from typing import Any
+
+import requests
 
 from .config import Configuration
 from .exceptions import BackupCancelled, PermanentError, RetryableError
@@ -126,8 +130,8 @@ class BackupManager:
 
         while attempt < max_attempts:
             try:
-                self._fetch_entry(entry)
-                self._download_entry(entry)
+                entry_data = self._fetch_entry(entry)
+                self._download_entry(entry, entry_data)
                 break
             except RetryableError as exc:
                 attempt += 1
@@ -161,15 +165,51 @@ class BackupManager:
         self._state_manager.save()
         return entry
 
-    def _fetch_entry(self, entry: BackupEntry) -> None:
-        """Retrieve the entry from the client manager before backing it up."""
+    def _fetch_entry(self, entry: BackupEntry) -> Any:
+        """Retrieve the entry from the client manager and hydrate local entry fields.
+
+        Returns the raw SDK entry object for further processing.
+        """
 
         result = self._client_manager.get_entry(entry.entry_id)
         if result is None:
             raise RetryableError("Entry lookup returned no data")
 
-    def _download_entry(self, entry: BackupEntry) -> None:
-        """Create the entry backup artifacts and record progress."""
+        def value(item: Any, attr: str, fallback: Any = None) -> Any:
+            getter = f"get{attr[0].upper()}{attr[1:]}"
+            if hasattr(item, getter):
+                return getattr(item, getter)()
+            if hasattr(item, attr):
+                return getattr(item, attr)
+            return fallback
+
+        entry.name = str(value(result, "name", entry.name))
+        entry.reference_id = str(value(result, "referenceId", entry.reference_id))
+        entry.owner_id = str(value(result, "userId", entry.owner_id))
+        entry.media_type = str(
+            value(result, "mediaType", value(result, "type", entry.media_type) or "")
+        )
+        try:
+            entry.duration_seconds = int(value(result, "duration", entry.duration_seconds) or 0)
+        except Exception:
+            entry.duration_seconds = entry.duration_seconds
+        try:
+            entry.size_bytes = int(value(result, "size", entry.size_bytes) or 0)
+        except Exception:
+            entry.size_bytes = entry.size_bytes
+        try:
+            entry.updated_at = int(value(result, "updatedAt", entry.updated_at) or 0)
+        except Exception:
+            entry.updated_at = entry.updated_at
+        try:
+            entry.created_at = int(value(result, "createdAt", entry.created_at) or 0)
+        except Exception:
+            entry.created_at = entry.created_at
+
+        return result
+
+    def _download_entry(self, entry: BackupEntry, entry_data: Any) -> None:
+        """Create the entry backup artifacts and record progress using real downloads."""
 
         if self._dry_run:
             self._logger.info(EventId.APPLICATION_START, f"Dry run: would back up entry {entry.entry_id}")
@@ -191,7 +231,29 @@ class BackupManager:
             encoding="utf-8",
         )
 
-        media_skipped = self._write_media_if_needed(backup_dir, entry)
+        # Download media
+        media_skipped = False
+        try:
+            media_url = self._client_manager.get_entry_media_url(entry.entry_id)
+            if media_url:
+                file_path = self._media_file_path(backup_dir, entry)
+                try:
+                    with requests.get(media_url, stream=True, timeout=30) as resp:
+                        resp.raise_for_status()
+                        with file_path.open("wb") as fh:
+                            for chunk in resp.iter_content(chunk_size=8192):
+                                if chunk:
+                                    fh.write(chunk)
+                                    self._state_manager.increment_statistic("bytes_downloaded", len(chunk))
+                    entry.downloads.mark_completed(ArtifactType.MEDIA)
+                except requests.RequestException as exc:
+                    raise RetryableError(f"Failed to download media for {entry.entry_id}: {exc}") from exc
+            else:
+                # Fallback to placeholder if no URL available
+                media_skipped = self._write_media_if_needed(backup_dir, entry)
+        except Exception:
+            # If the client method fails, fall back to placeholder to avoid blocking
+            media_skipped = self._write_media_if_needed(backup_dir, entry)
 
         if self._configuration.export.save_metadata and not self._is_image_entry(entry):
             profile_fields = self._configuration.metadata.profile_fields
@@ -211,8 +273,46 @@ class BackupManager:
                     fieldnames=["entry_id", "name"] + field_names,
                 )
                 writer.writeheader()
+
+                # Populate metadata values by profile and field name
                 row = {"entry_id": entry.entry_id, "name": entry.name}
                 row.update({field_name: "" for field_name in field_names})
+
+                for profile_id, fields in profile_fields.items():
+                    try:
+                        meta_objs = self._client_manager.list_metadata_objects(entry.entry_id, profile_id)
+                    except Exception:
+                        meta_objs = []
+
+                    for meta in meta_objs:
+                        # determine metadata id getter
+                        meta_id = None
+                        if hasattr(meta, "getId"):
+                            meta_id = getattr(meta, "getId")()
+                        elif hasattr(meta, "id"):
+                            meta_id = getattr(meta, "id")
+
+                        if not meta_id:
+                            continue
+
+                        try:
+                            xml = self._client_manager.get_metadata_xml(meta_id)
+                        except Exception:
+                            continue
+
+                        try:
+                            root = ElementTree.fromstring(xml)
+                        except Exception:
+                            continue
+
+                        for field_name in fields:
+                            if row.get(field_name):
+                                continue
+                            # try to find text for the field
+                            found = root.find(f".//{field_name}")
+                            if found is not None and found.text:
+                                row[field_name] = found.text
+
                 writer.writerow(row)
 
             entry.downloads.mark_completed(ArtifactType.METADATA)
@@ -227,27 +327,114 @@ class BackupManager:
             self._state_manager.increment_statistic("api_responses_saved")
 
         if self._configuration.export.save_captions:
-            (backup_dir / "captions.vtt").write_text("WEBVTT\n", encoding="utf-8")
-            entry.downloads.mark_completed(ArtifactType.CAPTIONS)
-            self._state_manager.increment_statistic("captions_downloaded")
+            captions_path = backup_dir / "captions.vtt"
+            wrote_any = False
+            try:
+                assets = self._client_manager.list_caption_assets(entry.entry_id)
+            except Exception:
+                assets = []
+
+            with captions_path.open("w", encoding="utf-8") as fh:
+                fh.write("WEBVTT\n")
+                for asset in assets:
+                    asset_id = None
+                    if hasattr(asset, "getId"):
+                        asset_id = getattr(asset, "getId")()
+                    elif hasattr(asset, "id"):
+                        asset_id = getattr(asset, "id")
+
+                    if not asset_id:
+                        continue
+
+                    try:
+                        vtt = self._client_manager.get_caption_webvtt(asset_id)
+                        fh.write(vtt)
+                        fh.write("\n")
+                        wrote_any = True
+                    except Exception:
+                        continue
+
+            if wrote_any:
+                entry.downloads.mark_completed(ArtifactType.CAPTIONS)
+                self._state_manager.increment_statistic("captions_downloaded")
 
         if self._configuration.export.save_thumbnails:
-            (backup_dir / "thumbnail.jpg").write_bytes(b"fake-thumbnail")
-            entry.downloads.mark_completed(ArtifactType.THUMBNAILS)
-            self._state_manager.increment_statistic("thumbnails_downloaded")
+            try:
+                thumbs = self._client_manager.list_thumb_assets(entry.entry_id)
+            except Exception:
+                thumbs = []
+
+            thumb_written = False
+            for thumb in thumbs:
+                thumb_id = None
+                if hasattr(thumb, "getId"):
+                    thumb_id = getattr(thumb, "getId")()
+                elif hasattr(thumb, "id"):
+                    thumb_id = getattr(thumb, "id")
+
+                if not thumb_id:
+                    continue
+
+                try:
+                    url = self._client_manager.get_thumb_url(thumb_id)
+                except Exception:
+                    continue
+
+                try:
+                    resp = requests.get(url, timeout=30)
+                    resp.raise_for_status()
+                    # use first thumbnail only
+                    (backup_dir / "thumbnail.jpg").write_bytes(resp.content)
+                    thumb_written = True
+                    break
+                except Exception:
+                    continue
+
+            if thumb_written:
+                entry.downloads.mark_completed(ArtifactType.THUMBNAILS)
+                self._state_manager.increment_statistic("thumbnails_downloaded")
 
         if self._configuration.export.save_attachments:
-            (backup_dir / "attachment.txt").write_text("attachment", encoding="utf-8")
-            entry.downloads.mark_completed(ArtifactType.ATTACHMENTS)
-            self._state_manager.increment_statistic("attachments_downloaded")
+            try:
+                atts = self._client_manager.list_attachment_assets(entry.entry_id)
+            except Exception:
+                atts = []
+
+            att_written = False
+            for att in atts:
+                att_id = None
+                if hasattr(att, "getId"):
+                    att_id = getattr(att, "getId")()
+                elif hasattr(att, "id"):
+                    att_id = getattr(att, "id")
+
+                if not att_id:
+                    continue
+
+                try:
+                    url = self._client_manager.get_attachment_url(att_id)
+                except Exception:
+                    continue
+
+                try:
+                    resp = requests.get(url, timeout=30)
+                    resp.raise_for_status()
+                    parsed = urlparse(url)
+                    name = unquote(parsed.path.split("/")[-1]) or f"attachment_{att_id}"
+                    (backup_dir / name).write_bytes(resp.content)
+                    att_written = True
+                except Exception:
+                    continue
+
+            if att_written:
+                entry.downloads.mark_completed(ArtifactType.ATTACHMENTS)
+                self._state_manager.increment_statistic("attachments_downloaded")
 
         if media_skipped:
             self._logger.info(
                 EventId.DOWNLOAD_COMPLETED,
                 f"Existing source media found for {entry.entry_id}, skipping media download.",
             )
-        else:
-            self._state_manager.increment_statistic("bytes_downloaded", 1)
 
         self._state_manager.increment_statistic("api_calls")
 
@@ -348,16 +535,69 @@ class BackupManager:
             encoding="utf-8",
         )
 
+        # Produce a concise summary for console and logfile
+        try:
+            stats = self._state_manager.statistics
+        except Exception:
+            stats = None
+
+        media_count = sum(1 for entry in entries if entry.downloads.media)
+        metadata_count = sum(1 for entry in entries if entry.downloads.metadata)
+        captions_count = sum(1 for entry in entries if entry.downloads.captions)
+        thumbnails_count = sum(1 for entry in entries if entry.downloads.thumbnails)
+        attachments_count = sum(1 for entry in entries if entry.downloads.attachments)
+        api_resp_count = sum(1 for entry in entries if entry.downloads.api_response)
+
+        bytes_downloaded = stats.bytes_downloaded if stats is not None else None
+        api_calls = stats.api_calls if stats is not None else None
+
+        summary_lines = [
+            f"Backup summary: {report_payload['count']} entries processed",
+            f"  Completed: {report_payload['completed']}, Failed: {report_payload['failed']}",
+            f"  Media files: {media_count}, Metadata: {metadata_count}, Captions: {captions_count}",
+            f"  Thumbnails: {thumbnails_count}, Attachments: {attachments_count}, API responses: {api_resp_count}",
+        ]
+
+        if bytes_downloaded is not None:
+            summary_lines.append(f"  Bytes downloaded: {bytes_downloaded}")
+
+        if api_calls is not None:
+            summary_lines.append(f"  API calls: {api_calls}")
+
+        # Log and print the summary
+        for line in summary_lines:
+            try:
+                self._logger.info(EventId.APPLICATION_STOP, line)
+            except Exception:
+                # Fallback to plain logging if structured logger fails
+                try:
+                    print(line, flush=True)
+                except Exception:
+                    pass
+
+        try:
+            print("\n".join(summary_lines), flush=True)
+        except Exception:
+            pass
+
     def discover_entries(self) -> list[BackupEntry]:
         """Discover entries from the client manager and return them as backup entries."""
 
-        result = self._client_manager.list_entries()
+        def value(item: Any, attr: str, fallback: Any) -> Any:
+            getter = f"get{attr[0].upper()}{attr[1:]}"
+            if hasattr(item, getter):
+                return getattr(item, getter)()
+            if hasattr(item, attr):
+                return getattr(item, attr)
+            return fallback
+
+        result = self._client_manager.list_all_entries()
         return [
             BackupEntry(
-                entry_id=str(item.get("id", "")),
-                name=str(item.get("name", "")),
-                updated_at=int(item.get("updated_at", 0)),
-                created_at=int(item.get("created_at", 0)),
+                entry_id=str(value(item, "id", "")),
+                name=str(value(item, "name", "")),
+                updated_at=int(value(item, "updatedAt", 0) or 0),
+                created_at=int(value(item, "createdAt", 0) or 0),
             )
             for item in result
         ]

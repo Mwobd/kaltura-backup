@@ -519,6 +519,10 @@ class BackupStatistics:
                 statistics.started,
                 UTC,
             )
+        elif isinstance(statistics.started, str):
+            statistics.started = datetime.fromisoformat(
+                statistics.started
+            )
 
         if isinstance(statistics.finished, (int, float)):
             statistics.finished = datetime.fromtimestamp(

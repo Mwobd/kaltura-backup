@@ -1,0 +1,10 @@
+Kaltura SDK import failed in interpreter: c:\Program Files\Python314\python.exe
+CWD: c:\Users\woltm14\OneDrive - Belastingdienst\Downloads\kaltura-backup
+sys.path: ['C:\\Users\\woltm14\\OneDrive - Belastingdienst\\Downloads\\kaltura-backup\\src', 'c:\\Users\\woltm14\\OneDrive - Belastingdienst\\Downloads\\kaltura-backup\\tests', 'C:\\Users\\woltm14\\OneDrive - Belastingdienst\\Downloads\\kaltura-backup\\src', 'c:\\Users\\woltm14\\OneDrive - Belastingdienst\\Downloads\\kaltura-backup\\tests', 'C:\\Users\\woltm14\\OneDrive - Belastingdienst\\Downloads\\kaltura-backup\\src', 'c:\\Users\\woltm14\\OneDrive - Belastingdienst\\Downloads\\kaltura-backup\\tests', 'C:\\Users\\woltm14\\OneDrive - Belastingdienst\\Downloads\\kaltura-backup\\src', 'c:\\Users\\woltm14\\OneDrive - Belastingdienst\\Downloads\\kaltura-backup\\tests', 'c:\\Users\\woltm14\\OneDrive - Belastingdienst\\Downloads\\kaltura-backup\\src', '', 'c:\\Program Files\\Python314\\python314.zip', 'c:\\Program Files\\Python314\\DLLs', 'c:\\Program Files\\Python314\\Lib', 'c:\\Program Files\\Python314', 'C:\\Users\\woltm14\\AppData\\Roaming\\Python\\Python314\\site-packages', 'c:\\Program Files\\Python314\\Lib\\site-packages']
+Traceback:
+Traceback (most recent call last):
+  File "C:\Users\woltm14\OneDrive - Belastingdienst\Downloads\kaltura-backup\src\kaltura_backup\client.py", line 38, in <module>
+    from KalturaClient import KalturaSessionType  # type: ignore[import-not-found]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ImportError: cannot import name 'KalturaSessionType' from 'KalturaClient' (C:\Users\woltm14\AppData\Roaming\Python\Python314\site-packages\KalturaClient\__init__.py)
+

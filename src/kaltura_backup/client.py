@@ -19,6 +19,9 @@ Kaltura SDK.
 from __future__ import annotations
 
 import time
+import sys
+import traceback
+import os
 
 #from collections import deque
 from functools import wraps
@@ -27,10 +30,41 @@ from typing import Any
 from typing import Callable
 from typing import TypeVar
 
+KALTURA_SDK_AVAILABLE = True
+
 try:
     from KalturaClient import KalturaClient  # type: ignore[import-not-found]
     from KalturaClient import KalturaConfiguration  # type: ignore[import-not-found]
-    from KalturaClient import KalturaSessionType  # type: ignore[import-not-found]
+    try:
+        from KalturaClient import KalturaSessionType  # type: ignore[import-not-found]
+    except ImportError:
+        try:
+            from KalturaClient.Plugins.Core import KalturaSessionType  # type: ignore[import-not-found]
+        except ImportError:
+            class KalturaSessionType:
+                ADMIN = "ADMIN"
+
+    try:
+        from KalturaClient.Plugins.Core import KalturaFilterPager, KalturaBaseEntryFilter, KalturaThumbAssetFilter  # type: ignore[import-not-found]
+    except ImportError:
+        KalturaFilterPager = None  # type: ignore[name-defined]
+        KalturaBaseEntryFilter = None  # type: ignore[name-defined]
+        KalturaThumbAssetFilter = None  # type: ignore[name-defined]
+
+    try:
+        from KalturaClient.Plugins.Caption import KalturaCaptionAssetFilter  # type: ignore[import-not-found]
+    except ImportError:
+        KalturaCaptionAssetFilter = None  # type: ignore[name-defined]
+
+    try:
+        from KalturaClient.Plugins.Metadata import KalturaMetadataFilter  # type: ignore[import-not-found]
+    except ImportError:
+        KalturaMetadataFilter = None  # type: ignore[name-defined]
+
+    try:
+        from KalturaClient.Plugins.Attachment import KalturaAttachmentAssetFilter  # type: ignore[import-not-found]
+    except ImportError:
+        KalturaAttachmentAssetFilter = None  # type: ignore[name-defined]
 except ImportError as exc:  # pragma: no cover - exercised when SDK is absent or missing SDK dependencies
     missing_module = getattr(exc, "name", None)
     if missing_module is not None and missing_module.lower() != "kalturaclient":
@@ -39,6 +73,26 @@ except ImportError as exc:  # pragma: no cover - exercised when SDK is absent or
             "Install the SDK and its dependencies (for example: lxml, requests), "
             "then retry."
         ) from exc
+
+    KALTURA_SDK_AVAILABLE = False
+    try:
+        tb = traceback.format_exc()
+        info = (
+            f"Kaltura SDK import failed in interpreter: {sys.executable}\n"
+            f"CWD: {os.getcwd()}\n"
+            f"sys.path: {sys.path}\n"
+            f"Traceback:\n{tb}\n"
+        )
+        log_path = os.path.join(os.getcwd(), "kaltura_import_error.log")
+        with open(log_path, "w", encoding="utf-8") as fh:
+            fh.write(info)
+
+        print(
+            "Kaltura SDK import failed. See kaltura_import_error.log for details.",
+            file=sys.stderr,
+        )
+    except Exception:
+        pass
 
     class KalturaConfiguration:
         def __init__(self, partner_id: int) -> None:
@@ -266,6 +320,14 @@ class KalturaClientManager:
         Create one authenticated Kaltura session.
         """
 
+        if not KALTURA_SDK_AVAILABLE:
+            raise ClientError(
+                "Kaltura SDK not available in this Python interpreter: "
+                f"{sys.executable}. Activate the virtual environment you installed the SDK into "
+                "or install the SDK and its dependencies (for example: lxml, requests) and retry. "
+                "Example: python -m pip install lxml requests git+https://github.com/kaltura/KalturaGeneratedAPIClientsPython.git"
+            )
+
         try:
 
             cfg = KalturaConfiguration(
@@ -481,10 +543,137 @@ class KalturaClientManager:
             if service is not None:
                 return service
 
+        # Provide extra diagnostic context to help identify SDK mismatches at runtime
+        available_attrs = [a for a in dir(client) if not a.startswith("_")]
+        sample = ", ".join(available_attrs[:50])
         raise ClientError(
             "Configured Kaltura client does not expose an entry service. "
+            "Verify the installed Kaltura SDK and its dependencies. "
+            f"Available client attributes: {sample}"
+        )
+
+    # ------------------------------------------------------------------
+
+    def _thumb_asset_service(self, client: KalturaClient) -> Any:
+        service = getattr(client, "thumbAsset", None)
+        if service is not None:
+            return service
+
+        raise ClientError(
+            "Configured Kaltura client does not expose a thumbAsset service. "
             "Verify the installed Kaltura SDK and its dependencies."
         )
+
+    # ------------------------------------------------------------------
+
+    def _caption_asset_service(self, client: KalturaClient) -> Any:
+        caption = getattr(client, "caption", None)
+        if caption is not None:
+            service = getattr(caption, "captionAsset", None)
+            if service is not None:
+                return service
+
+        raise ClientError(
+            "Configured Kaltura client does not expose a captionAsset service. "
+            "Verify the installed Kaltura SDK and its dependencies."
+        )
+
+    # ------------------------------------------------------------------
+
+    def _attachment_asset_service(self, client: KalturaClient) -> Any:
+        attachment = getattr(client, "attachment", None)
+        if attachment is not None:
+            service = getattr(attachment, "attachmentAsset", None)
+            if service is not None:
+                return service
+
+        raise ClientError(
+            "Configured Kaltura client does not expose an attachmentAsset service. "
+            "Verify the installed Kaltura SDK and its dependencies."
+        )
+
+    # ------------------------------------------------------------------
+
+    def _metadata_service(self, client: KalturaClient) -> Any:
+        metadata = getattr(client, "metadata", None)
+        if metadata is not None:
+            service = getattr(metadata, "metadata", None)
+            if service is not None:
+                return service
+
+        raise ClientError(
+            "Configured Kaltura client does not expose a metadata service. "
+            "Verify the installed Kaltura SDK and its dependencies."
+        )
+
+    # ------------------------------------------------------------------
+
+    def _initialize_pager(
+        self,
+        pager: Any | None = None,
+        page_size: int = 500,
+        page_index: int = 1,
+    ) -> Any | None:
+        if pager is not None:
+            return pager
+
+        if KalturaFilterPager is None:
+            return None
+
+        result = KalturaFilterPager()
+
+        if hasattr(result, "setPageSize"):
+            result.setPageSize(page_size)
+        elif hasattr(result, "pageSize"):
+            result.pageSize = page_size
+
+        if hasattr(result, "setPageIndex"):
+            result.setPageIndex(page_index)
+        elif hasattr(result, "pageIndex"):
+            result.pageIndex = page_index
+
+        return result
+
+    # ------------------------------------------------------------------
+
+    def _increment_pager(self, pager: Any) -> None:
+        if hasattr(pager, "setPageIndex") and hasattr(pager, "getPageIndex"):
+            pager.setPageIndex(pager.getPageIndex() + 1)
+        elif hasattr(pager, "pageIndex"):
+            pager.pageIndex += 1
+        else:
+            raise ClientError("Unable to advance Kaltura pager; unsupported pager type.")
+
+    # ------------------------------------------------------------------
+
+    def _objects_from_response(self, response: Any) -> list[Any]:
+        if response is None:
+            return []
+
+        if hasattr(response, "getObjects"):
+            return list(response.getObjects() or [])
+
+        if hasattr(response, "objects"):
+            return list(response.objects or [])
+
+        try:
+            return list(response)
+        except Exception:
+            return [response]
+
+    # ------------------------------------------------------------------
+
+    def _total_count_from_response(self, response: Any) -> int | None:
+        if response is None:
+            return None
+
+        if hasattr(response, "getTotalCount"):
+            return response.getTotalCount()
+
+        if hasattr(response, "totalCount"):
+            return response.totalCount
+
+        return None
 
     # ------------------------------------------------------------------
 
@@ -510,6 +699,291 @@ class KalturaClientManager:
 
     # ------------------------------------------------------------------
 
+    def _make_filter(
+        self,
+        filter_cls: type[Any] | None,
+        **kwargs: Any,
+    ) -> Any:
+        if filter_cls is None:
+            raise ClientError(
+                "The configured Kaltura SDK does not support the requested filter type. "
+                "Verify the installed SDK package."
+            )
+
+        filter_object = filter_cls()
+        for key, value in kwargs.items():
+            if value is None:
+                continue
+
+            setter = f"set{key[0].upper()}{key[1:]}"
+            if hasattr(filter_object, setter):
+                getattr(filter_object, setter)(value)
+            elif hasattr(filter_object, key):
+                setattr(filter_object, key, value)
+
+        return filter_object
+
+    # ------------------------------------------------------------------
+
+    @retryable
+    def get_entry_media_url(
+        self,
+        entry_id: str,
+    ) -> str:
+        entry = self.get_entry(entry_id)
+
+        if hasattr(entry, "getDownloadUrl"):
+            return entry.getDownloadUrl()
+
+        if hasattr(entry, "downloadUrl"):
+            return entry.downloadUrl
+
+        raise ClientError(
+            "Kaltura entry object does not expose a media download URL."
+        )
+
+    # ------------------------------------------------------------------
+
+    @retryable
+    def list_metadata_objects(
+        self,
+        entry_id: str,
+        metadata_profile_id: str | int | None = None,
+        page_size: int = 500,
+    ) -> list[Any]:
+        filter_object = self._make_filter(
+            KalturaMetadataFilter,
+            objectIdEqual=entry_id,
+            metadataProfileIdEqual=int(metadata_profile_id)
+            if metadata_profile_id is not None
+            else None,
+        )
+
+        # Do not set metadataObjectTypeEqual to a raw int — the SDK expects
+        # an enum-like object with a `getValue()` method. Leave the filter
+        # as-is and let callers specify the correct typed value when needed.
+
+        entries: list[Any] = []
+        pager = self._initialize_pager(page_size=page_size, page_index=1)
+
+        while True:
+            with self.session() as session:
+                try:
+                    response = self._metadata_service(session.client).list(
+                        filter_object,
+                        pager,
+                    )
+                except Exception as exc:
+                    self._translate_exception(exc)
+
+            batch = self._objects_from_response(response)
+            if not batch:
+                break
+
+            entries.extend(batch)
+
+            total_count = self._total_count_from_response(response)
+            if total_count is not None and len(entries) >= total_count:
+                break
+
+            if len(batch) < page_size:
+                break
+
+            self._increment_pager(pager)
+
+        return entries
+
+    # ------------------------------------------------------------------
+
+    @retryable
+    def get_metadata_xml(
+        self,
+        metadata_id: str,
+    ) -> str:
+        with self.session() as session:
+            try:
+                return self._metadata_service(session.client).serve(
+                    metadata_id
+                )
+            except Exception as exc:
+                self._translate_exception(exc)
+
+    # ------------------------------------------------------------------
+
+    @retryable
+    def list_thumb_assets(
+        self,
+        entry_id: str,
+        page_size: int = 500,
+    ) -> list[Any]:
+        filter_object = self._make_filter(
+            KalturaThumbAssetFilter,
+            entryIdEqual=entry_id,
+        )
+
+        assets: list[Any] = []
+        pager = self._initialize_pager(page_size=page_size, page_index=1)
+
+        while True:
+            with self.session() as session:
+                try:
+                    response = self._thumb_asset_service(session.client).list(
+                        filter_object,
+                        pager,
+                    )
+                except Exception as exc:
+                    self._translate_exception(exc)
+
+            batch = self._objects_from_response(response)
+            if not batch:
+                break
+
+            assets.extend(batch)
+            total_count = self._total_count_from_response(response)
+            if total_count is not None and len(assets) >= total_count:
+                break
+
+            if len(batch) < page_size:
+                break
+
+            self._increment_pager(pager)
+
+        return assets
+
+    # ------------------------------------------------------------------
+
+    @retryable
+    def get_thumb_url(
+        self,
+        thumb_asset_id: str,
+        thumb_params_id: Any | None = None,
+    ) -> str:
+        with self.session() as session:
+            try:
+                return self._thumb_asset_service(session.client).getUrl(
+                    thumb_asset_id,
+                    None,
+                    thumb_params_id,
+                )
+            except Exception as exc:
+                self._translate_exception(exc)
+
+    # ------------------------------------------------------------------
+
+    @retryable
+    def list_caption_assets(
+        self,
+        entry_id: str,
+        page_size: int = 500,
+    ) -> list[Any]:
+        filter_object = self._make_filter(
+            KalturaCaptionAssetFilter,
+            entryIdEqual=entry_id,
+        )
+
+        assets: list[Any] = []
+        pager = self._initialize_pager(page_size=page_size, page_index=1)
+
+        while True:
+            with self.session() as session:
+                try:
+                    response = self._caption_asset_service(session.client).list(
+                        filter_object,
+                        pager,
+                    )
+                except Exception as exc:
+                    self._translate_exception(exc)
+
+            batch = self._objects_from_response(response)
+            if not batch:
+                break
+
+            assets.extend(batch)
+            total_count = self._total_count_from_response(response)
+            if total_count is not None and len(assets) >= total_count:
+                break
+
+            if len(batch) < page_size:
+                break
+
+            self._increment_pager(pager)
+
+        return assets
+
+    # ------------------------------------------------------------------
+
+    @retryable
+    def get_caption_webvtt(
+        self,
+        caption_asset_id: str,
+    ) -> str:
+        with self.session() as session:
+            try:
+                return self._caption_asset_service(session.client).serveWebVTT(
+                    caption_asset_id,
+                )
+            except Exception as exc:
+                self._translate_exception(exc)
+
+    # ------------------------------------------------------------------
+
+    @retryable
+    def list_attachment_assets(
+        self,
+        entry_id: str,
+        page_size: int = 500,
+    ) -> list[Any]:
+        filter_object = self._make_filter(
+            KalturaAttachmentAssetFilter,
+            entryIdEqual=entry_id,
+        )
+
+        assets: list[Any] = []
+        pager = self._initialize_pager(page_size=page_size, page_index=1)
+
+        while True:
+            with self.session() as session:
+                try:
+                    response = self._attachment_asset_service(session.client).list(
+                        filter_object,
+                        pager,
+                    )
+                except Exception as exc:
+                    self._translate_exception(exc)
+
+            batch = self._objects_from_response(response)
+            if not batch:
+                break
+
+            assets.extend(batch)
+            total_count = self._total_count_from_response(response)
+            if total_count is not None and len(assets) >= total_count:
+                break
+
+            if len(batch) < page_size:
+                break
+
+            self._increment_pager(pager)
+
+        return assets
+
+    # ------------------------------------------------------------------
+
+    @retryable
+    def get_attachment_url(
+        self,
+        attachment_asset_id: str,
+    ) -> str:
+        with self.session() as session:
+            try:
+                return self._attachment_asset_service(session.client).getUrl(
+                    attachment_asset_id,
+                )
+            except Exception as exc:
+                self._translate_exception(exc)
+
+    # ------------------------------------------------------------------
+
     @retryable
     def list_entries(
         self,
@@ -523,14 +997,62 @@ class KalturaClientManager:
         with self.session() as session:
 
             try:
-                return self._entry_service(session.client).list(
+                response = self._entry_service(session.client).list(
                     filter_object,
                     pager,
                 )
 
+                return self._objects_from_response(response)
+
             except Exception as exc:
 
                 self._translate_exception(exc)
+
+    # ------------------------------------------------------------------
+
+    @retryable
+    def list_all_entries(
+        self,
+        filter_object: Any = None,
+        page_size: int = 500,
+    ) -> list[Any]:
+        """
+        Retrieve all entries using Kaltura paging.
+        """
+
+        entries: list[Any] = []
+        pager = self._initialize_pager(page_size=page_size, page_index=1)
+        page = 1
+
+        while True:
+            with self.session() as session:
+                try:
+                    response = self._entry_service(session.client).list(
+                        filter_object,
+                        pager,
+                    )
+                except Exception as exc:
+                    self._translate_exception(exc)
+
+            batch = self._objects_from_response(response)
+            if not batch:
+                break
+
+            entries.extend(batch)
+
+            total_count = self._total_count_from_response(response)
+            if total_count is not None and len(entries) >= total_count:
+                break
+
+            # If the Kaltura service returned fewer entries than page size,
+            # the current page is the last page.
+            if len(batch) < page_size:
+                break
+
+            self._increment_pager(pager)
+            page += 1
+
+        return entries
 
     # ------------------------------------------------------------------
     # Exception translation
