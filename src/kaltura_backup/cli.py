@@ -10,7 +10,6 @@ from .backup import BackupManager
 from .config import load_configuration
 from .exceptions import BackupError, ConfigurationError
 from .logging_utils import initialize_logger
-from .models import BackupStatus
 from .state import StateManager
 
 

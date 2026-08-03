@@ -1,4 +1,7 @@
 {
   "entry_id": "entry-1",
-  "name": "demo"
+  "name": "demo",
+  "custom_metadata": {
+    "profiles": {}
+  }
 }

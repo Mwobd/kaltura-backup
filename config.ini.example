@@ -28,6 +28,19 @@ SaveCaptions = false
 SaveThumbnails = false
 SaveAttachments = false
 
+[Metadata]
+MetadataProfileIds = 
+MetadataFieldNames = 
+
 [Logging]
 Level = INFO
 KeepLogs = 7
+
+[metadata_profiles]
+4696 = Attributie, LinkNaarBron, LinkNaarLicentievoorwaarden
+4694 = VrijwaringsverklaringPortretrecht
+4695 = Contractpartij, Contractnummer, Artikel24ARVODI2018OngewijzigdVanKrachtInContract
+4697 = GrondslagAVG
+4698 = Directie
+4699 = Status, EindeBewaartermijn, UitzonderingOpVernietiging
+4693 = Proces, Afdoeningsjaar, UitgeplaatstBijNIBG, LinkNaarNIBG

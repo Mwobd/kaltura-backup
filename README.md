@@ -53,6 +53,16 @@ python -m kaltura_backup --config config.ini
 
 The main configuration file is [config.ini.example](config.ini.example). If no config file is present, the application will create a default [config.ini](config.ini) for you on first run so you can adjust the connection and path settings before the next execution.
 
+The example config now includes a `[metadata_profiles]` section. Each profile is configured on its own line using the Kaltura metadata profile ID and a comma-separated list of field names:
+
+```ini
+[metadata_profiles]
+4696 = Attributie, LinkNaarBron, LinkNaarLicentievoorwaarden
+4694 = VrijwaringsverklaringPortretrecht
+```
+
+This section controls which custom metadata fields are written for matching Kaltura profile IDs during backup.
+
 You can also bootstrap it explicitly from Python:
 
 ```python

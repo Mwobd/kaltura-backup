@@ -10,6 +10,7 @@ from kaltura_backup.config import (
     PathConfig,
     DownloadConfig,
     ExportConfig,
+    MetadataConfig,
     LoggingConfig,
 )
 from kaltura_backup.models import ArtifactType, BackupEntry, BackupStatus
@@ -61,6 +62,7 @@ def _make_configuration(tmp_path: Path) -> Configuration:
             save_thumbnails=False,
             save_attachments=False,
         ),
+        metadata=MetadataConfig(profile_fields={}),
         logging=LoggingConfig(level="INFO", keep_logs=1),
     )
 
@@ -132,6 +134,35 @@ def test_backup_manager_emits_progress_updates(tmp_path: Path, capsys) -> None:
     assert "progress" in captured.out.lower()
 
 
+def test_backup_manager_skips_existing_media_but_writes_artifacts(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    state_manager = StateManager(configuration)
+    logger = initialize_logger(configuration)
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=state_manager,
+        client_manager=DummyClientManager(),
+        logger=logger,
+    )
+
+    entry = BackupEntry(
+        entry_id="entry-5",
+        name="demo",
+        updated_at=1,
+        created_at=1,
+        media_type="video",
+    )
+    backup_dir = configuration.paths.backup_dir / entry.entry_id
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    (backup_dir / "media.mp4").write_bytes(b"existing-media")
+
+    manager.run([entry])
+
+    assert (backup_dir / "media.mp4").read_bytes() == b"existing-media"
+    assert (backup_dir / "metadata.json").exists()
+    assert (backup_dir / "api_response.json").exists()
+
+
 def test_backup_manager_uses_configured_worker_count(tmp_path: Path) -> None:
     configuration = _make_configuration(tmp_path)
     configuration = Configuration(
@@ -147,6 +178,7 @@ def test_backup_manager_uses_configured_worker_count(tmp_path: Path) -> None:
             verify_checksum=configuration.download.verify_checksum,
         ),
         export=configuration.export,
+        metadata=configuration.metadata,
         logging=configuration.logging,
     )
     state_manager = StateManager(configuration)

@@ -10,6 +10,7 @@ from kaltura_backup.config import (
     PathConfig,
     DownloadConfig,
     ExportConfig,
+    MetadataConfig,
     LoggingConfig,
 )
 from kaltura_backup.models import BackupEntry
@@ -68,6 +69,7 @@ def _make_configuration(tmp_path: Path) -> Configuration:
             save_thumbnails=False,
             save_attachments=False,
         ),
+        metadata=MetadataConfig(profile_fields={}),
         logging=LoggingConfig(level="INFO", keep_logs=1),
     )
 

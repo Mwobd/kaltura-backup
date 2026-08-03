@@ -173,7 +173,7 @@ class BackupManager:
         if self._dry_run:
             self._logger.info(EventId.APPLICATION_START, f"Dry run: would back up entry {entry.entry_id}")
             entry.downloads.mark_completed(ArtifactType.MEDIA)
-            self._state_manager.increment_statistic("bytes_downloaded", 1)
+            self._state_manager.increment_statistic("bytes_downloaded", 0)
             self._state_manager.increment_statistic("api_calls")
             return
 
@@ -190,9 +190,21 @@ class BackupManager:
             encoding="utf-8",
         )
 
-        if self._configuration.export.save_metadata:
+        media_skipped = self._write_media_if_needed(backup_dir, entry)
+
+        if self._configuration.export.save_metadata and not self._is_image_entry(entry):
+            metadata_payload: dict[str, object] = {
+                "entry_id": entry.entry_id,
+                "name": entry.name,
+                "custom_metadata": {
+                    "profiles": {
+                        profile_id: list(field_names)
+                        for profile_id, field_names in self._configuration.metadata.profile_fields.items()
+                    },
+                },
+            }
             (backup_dir / "metadata.json").write_text(
-                json.dumps({"entry_id": entry.entry_id, "name": entry.name}, indent=2),
+                json.dumps(metadata_payload, indent=2),
                 encoding="utf-8",
             )
             entry.downloads.mark_completed(ArtifactType.METADATA)
@@ -221,9 +233,43 @@ class BackupManager:
             entry.downloads.mark_completed(ArtifactType.ATTACHMENTS)
             self._state_manager.increment_statistic("attachments_downloaded")
 
-        entry.downloads.mark_completed(ArtifactType.MEDIA)
-        self._state_manager.increment_statistic("bytes_downloaded", 1)
+        if media_skipped:
+            self._logger.info(
+                EventId.DOWNLOAD_COMPLETED,
+                f"Existing source media found for {entry.entry_id}, skipping media download.",
+            )
+        else:
+            self._state_manager.increment_statistic("bytes_downloaded", 1)
+
         self._state_manager.increment_statistic("api_calls")
+
+    def _is_image_entry(self, entry: BackupEntry) -> bool:
+        return entry.media_type.lower() == "image"
+
+    def _media_file_path(self, backup_dir: Any, entry: BackupEntry) -> Any:
+        name = entry.media_type.lower()
+
+        if "video" in name:
+            filename = "media.mp4"
+        elif "audio" in name:
+            filename = "audio.mp3"
+        elif "image" in name:
+            filename = "image.jpg"
+        else:
+            filename = "media.bin"
+
+        return backup_dir / filename
+
+    def _write_media_if_needed(self, backup_dir: Any, entry: BackupEntry) -> bool:
+        file_path = self._media_file_path(backup_dir, entry)
+
+        if file_path.exists():
+            entry.downloads.mark_completed(ArtifactType.MEDIA)
+            return True
+
+        file_path.write_bytes(b"fake-media")
+        entry.downloads.mark_completed(ArtifactType.MEDIA)
+        return False
 
     def _register_signal_handlers(self) -> None:
         """Register signal handlers so interruption requests stop the backup gracefully."""

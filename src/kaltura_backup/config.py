@@ -57,6 +57,8 @@ SaveCaptions = false
 SaveThumbnails = false
 SaveAttachments = false
 
+[metadata_profiles]
+
 [Logging]
 Level = INFO
 KeepLogs = 7
@@ -122,6 +124,15 @@ class ExportConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class MetadataConfig:
+    """
+    Custom metadata profile selection.
+    """
+
+    profile_fields: dict[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True, slots=True)
 class LoggingConfig:
     """
     Logging configuration.
@@ -141,6 +152,7 @@ class Configuration:
     paths: PathConfig
     download: DownloadConfig
     export: ExportConfig
+    metadata: MetadataConfig
     logging: LoggingConfig
 
 
@@ -167,6 +179,7 @@ class ConfigLoader:
         "Paths",
         "Download",
         "Export",
+        "metadata_profiles",
         "Logging",
     )
 
@@ -204,6 +217,7 @@ class ConfigLoader:
             paths=self._load_paths(),
             download=self._load_download(),
             export=self._load_export(),
+            metadata=self._load_metadata(),
             logging=self._load_logging(),
         )
 
@@ -373,6 +387,7 @@ class ConfigLoader:
             retry_delay_seconds=self._positive_int(
                 section,
                 "RetryDelaySeconds",
+                minimum=0,
             ),
             timeout=self._positive_int(
                 section,
@@ -381,6 +396,7 @@ class ConfigLoader:
             skip_older_than_hours=self._positive_int(
                 section,
                 "SkipOlderThanHours",
+                minimum=0,
             ),
             resume_downloads=self._parser.getboolean(
                 section,
@@ -422,6 +438,28 @@ class ConfigLoader:
                 section,
                 "SaveAttachments",
             ),
+        )
+
+    # ---------------------------------------------------------------------
+
+    def _load_metadata(self) -> MetadataConfig:
+        """
+        Load the [metadata_profiles] section.
+        """
+
+        section = "metadata_profiles"
+
+        profile_fields: dict[str, tuple[str, ...]] = {}
+
+        for profile_id, raw_fields in self._parser.items(section):
+            profile_fields[profile_id.strip()] = tuple(
+                field.strip()
+                for field in raw_fields.split(",")
+                if field.strip()
+            )
+
+        return MetadataConfig(
+            profile_fields=profile_fields,
         )
 
     # ---------------------------------------------------------------------
@@ -508,8 +546,15 @@ def load_configuration(
         Immutable application configuration.
     """
 
-    if not Path(config_file).exists():
-        ensure_default_config(config_file)
+    config_path = Path(config_file)
+
+    if not config_path.exists():
+        if config_path.name == "config.ini":
+            ensure_default_config(config_path)
+        else:
+            raise ConfigurationError(
+                f"Configuration file not found: {config_path}"
+            )
 
     return ConfigLoader(config_file).load()
 

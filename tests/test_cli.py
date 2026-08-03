@@ -81,6 +81,7 @@ def test_main_retries_failed_entries_from_state(tmp_path: Path, capsys) -> None:
         "[Paths]\nBackupDir = backups\nCsvDir = csv\nLogDir = logs\nReportDir = reports\nStateFile = " + str(state_path).replace('\\', '/') + "\n"
         "[Download]\nWorkers = 1\nRetryCount = 0\nRetryDelaySeconds = 1\nTimeout = 5\nSkipOlderThanHours = 1\nResumeDownloads = false\nVerifyChecksum = false\n"
         "[Export]\nSaveMetadata = true\nSaveApiResponses = false\nSaveCaptions = false\nSaveThumbnails = false\nSaveAttachments = false\n"
+        "[metadata_profiles]\n"
         "[Logging]\nLevel = INFO\nKeepLogs = 1\n",
         encoding="utf-8",
     )
