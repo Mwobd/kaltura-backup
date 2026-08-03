@@ -7,6 +7,7 @@ for the backup workflow.
 
 from __future__ import annotations
 
+import csv
 import json
 import signal
 import threading
@@ -193,20 +194,27 @@ class BackupManager:
         media_skipped = self._write_media_if_needed(backup_dir, entry)
 
         if self._configuration.export.save_metadata and not self._is_image_entry(entry):
-            metadata_payload: dict[str, object] = {
-                "entry_id": entry.entry_id,
-                "name": entry.name,
-                "custom_metadata": {
-                    "profiles": {
-                        profile_id: list(field_names)
-                        for profile_id, field_names in self._configuration.metadata.profile_fields.items()
-                    },
-                },
-            }
-            (backup_dir / "metadata.json").write_text(
-                json.dumps(metadata_payload, indent=2),
-                encoding="utf-8",
-            )
+            profile_fields = self._configuration.metadata.profile_fields
+            field_names: list[str] = []
+            seen_fields: set[str] = set()
+
+            for fields in profile_fields.values():
+                for field_name in fields:
+                    if field_name not in seen_fields:
+                        seen_fields.add(field_name)
+                        field_names.append(field_name)
+
+            metadata_path = backup_dir / "metadata.csv"
+            with metadata_path.open("w", encoding="utf-8", newline="") as metadata_file:
+                writer = csv.DictWriter(
+                    metadata_file,
+                    fieldnames=["entry_id", "name"] + field_names,
+                )
+                writer.writeheader()
+                row = {"entry_id": entry.entry_id, "name": entry.name}
+                row.update({field_name: "" for field_name in field_names})
+                writer.writerow(row)
+
             entry.downloads.mark_completed(ArtifactType.METADATA)
             self._state_manager.increment_statistic("metadata_written")
 

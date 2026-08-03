@@ -112,7 +112,7 @@ def test_backup_manager_writes_artifacts_and_supports_resume(tmp_path: Path) -> 
 
     backup_dir = configuration.paths.backup_dir / entry.entry_id
     assert (backup_dir / "manifest.json").exists()
-    assert (backup_dir / "metadata.json").exists()
+    assert (backup_dir / "metadata.csv").exists()
     assert (backup_dir / "api_response.json").exists()
 
 
@@ -159,7 +159,7 @@ def test_backup_manager_skips_existing_media_but_writes_artifacts(tmp_path: Path
     manager.run([entry])
 
     assert (backup_dir / "media.mp4").read_bytes() == b"existing-media"
-    assert (backup_dir / "metadata.json").exists()
+    assert (backup_dir / "metadata.csv").exists()
     assert (backup_dir / "api_response.json").exists()
 
 

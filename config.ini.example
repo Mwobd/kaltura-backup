@@ -28,10 +28,6 @@ SaveCaptions = false
 SaveThumbnails = false
 SaveAttachments = false
 
-[Metadata]
-MetadataProfileIds = 
-MetadataFieldNames = 
-
 [Logging]
 Level = INFO
 KeepLogs = 7

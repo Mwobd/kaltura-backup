@@ -61,7 +61,7 @@ The example config now includes a `[metadata_profiles]` section. Each profile is
 4694 = VrijwaringsverklaringPortretrecht
 ```
 
-This section controls which custom metadata fields are written for matching Kaltura profile IDs during backup.
+When metadata backup is enabled, custom metadata is written to `metadata.csv` for each entry. The file includes a header line with `entry_id`, `name`, and the configured metadata field names.
 
 You can also bootstrap it explicitly from Python:
 
