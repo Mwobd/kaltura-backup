@@ -112,6 +112,12 @@ class PermanentError(BackupError):
     """
 
 
+class ClientError(PermanentError):
+    """
+    Kaltura client configuration or integration error.
+    """
+
+
 class EntryNotFoundError(PermanentError):
     """
     Requested Kaltura entry does not exist.

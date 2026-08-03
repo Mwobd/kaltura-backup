@@ -7,6 +7,10 @@ name = "kaltura-backup"
 version = "0.1.0"
 description = "Backup utility for Kaltura content"
 requires-python = ">=3.11"
+dependencies = [
+    "requests",
+    "lxml",
+]
 
 [project.scripts]
 kaltura-backup = "kaltura_backup.cli:main"

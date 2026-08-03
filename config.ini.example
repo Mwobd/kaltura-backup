@@ -1,7 +1,7 @@
 [Connection]
 PartnerId = 123
 AdminSecret = your-admin-secret
-ServiceUrl = https://www.kaltura.com
+ServiceUrl = https://api.de.kaltura.com/api_v3/testme/
 Expiry = 86400
 Privileges = 
 

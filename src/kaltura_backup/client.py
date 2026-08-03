@@ -31,7 +31,15 @@ try:
     from KalturaClient import KalturaClient  # type: ignore[import-not-found]
     from KalturaClient import KalturaConfiguration  # type: ignore[import-not-found]
     from KalturaClient import KalturaSessionType  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - exercised when SDK is absent
+except ImportError as exc:  # pragma: no cover - exercised when SDK is absent or missing SDK dependencies
+    missing_module = getattr(exc, "name", None)
+    if missing_module is not None and missing_module.lower() != "kalturaclient":
+        raise RuntimeError(
+            "Kaltura SDK import failed because a dependency is missing. "
+            "Install the SDK and its dependencies (for example: lxml, requests), "
+            "then retry."
+        ) from exc
+
     class KalturaConfiguration:
         def __init__(self, partner_id: int) -> None:
             self.partner_id = partner_id
@@ -56,6 +64,7 @@ from .config import Configuration
 from .exceptions import (
     ApiError,
     AuthenticationError,
+    ClientError,
     NetworkError,
     RetryExceededError,
     RetryableError,
@@ -454,6 +463,31 @@ class KalturaClientManager:
     # Entry operations
     # ------------------------------------------------------------------
 
+    def _entry_service(self, client: KalturaClient) -> Any:
+        """
+        Return the entry service for the current Kaltura client.
+
+        Some SDK versions expose the service as `baseEntry`; others may use
+        alternate service names.
+        """
+
+        for service_name in (
+            "baseEntry",
+            "entry",
+            "entryService",
+            "entry_service",
+        ):
+            service = getattr(client, service_name, None)
+            if service is not None:
+                return service
+
+        raise ClientError(
+            "Configured Kaltura client does not expose an entry service. "
+            "Verify the installed Kaltura SDK and its dependencies."
+        )
+
+    # ------------------------------------------------------------------
+
     @retryable
     def get_entry(
         self,
@@ -466,8 +500,7 @@ class KalturaClientManager:
         with self.session() as session:
 
             try:
-
-                return session.client.baseEntry.get(
+                return self._entry_service(session.client).get(
                     entry_id
                 )
 
@@ -490,8 +523,7 @@ class KalturaClientManager:
         with self.session() as session:
 
             try:
-
-                return session.client.baseEntry.list(
+                return self._entry_service(session.client).list(
                     filter_object,
                     pager,
                 )
@@ -538,6 +570,9 @@ class KalturaClientManager:
                 str(exception)
             ) from exception
 
+        if isinstance(exception, ClientError):
+            raise exception
+
         if (
             "temporarily"
             in message
@@ -550,4 +585,4 @@ class KalturaClientManager:
 
         raise ApiError(
             str(exception)
-        ) from exception    
+        ) from exception

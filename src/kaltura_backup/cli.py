@@ -63,7 +63,7 @@ def main(
                 from .client import KalturaClientManager
 
                 client_manager = KalturaClientManager(configuration, logger)
-            except Exception:  # pragma: no cover - fallback for missing SDK
+            except ImportError:  # pragma: no cover - fallback for missing SDK
                 client_manager = type(
                     "ClientManagerStub",
                     (),

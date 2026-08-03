@@ -1,0 +1,5 @@
+lxml
+requests
+# Kaltura official Python API client (installs from GitHub)
+git+https://github.com/kaltura/KalturaGeneratedAPIClientsPython.git
+
