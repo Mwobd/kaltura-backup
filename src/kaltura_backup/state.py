@@ -480,7 +480,7 @@ class StateManager:
         return [
             entry
             for entry in self._entries.values()
-            if entry.status.name == "FAILED"
+            if entry.status is BackupStatus.FAILED
         ]
 
     # -------------------------------------------------------------

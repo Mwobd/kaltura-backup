@@ -11,6 +11,7 @@ from kaltura_backup.config import (
     ExportConfig,
     LoggingConfig,
 )
+from kaltura_backup.models import BackupEntry, BackupStatus
 from kaltura_backup.state import StateManager
 
 
@@ -61,3 +62,31 @@ def test_state_manager_loads_finished_timestamp_from_disk(tmp_path: Path) -> Non
 
     assert reloaded.statistics.entries_completed == 1
     assert reloaded.statistics.finished is not None
+
+
+def test_state_manager_failed_entries_returns_failed_entries(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    state_manager = StateManager(configuration)
+
+    failed_entry = BackupEntry(
+        entry_id="entry-5",
+        name="demo",
+        updated_at=1,
+        created_at=1,
+        status=BackupStatus.FAILED,
+    )
+    completed_entry = BackupEntry(
+        entry_id="entry-6",
+        name="demo",
+        updated_at=1,
+        created_at=1,
+        status=BackupStatus.COMPLETED,
+    )
+
+    state_manager.add(failed_entry)
+    state_manager.add(completed_entry)
+
+    failed_entries = state_manager.failed_entries()
+
+    assert len(failed_entries) == 1
+    assert failed_entries[0].entry_id == "entry-5"

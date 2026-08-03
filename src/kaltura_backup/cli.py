@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any, Callable
 import sys
 
 from . import __version__
@@ -41,7 +42,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    client_manager_factory: Callable[[Any, Any], Any] | None = None,
+) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -52,22 +56,25 @@ def main(argv: list[str] | None = None) -> int:
         state_manager = StateManager(configuration)
         state_manager.load()
 
-        client_manager = None
-        try:
-            from .client import KalturaClientManager
+        if client_manager_factory is not None:
+            client_manager = client_manager_factory(configuration, logger)
+        else:
+            client_manager = None
+            try:
+                from .client import KalturaClientManager
 
-            client_manager = KalturaClientManager(configuration, logger)
-        except Exception:  # pragma: no cover - fallback for missing SDK
-            client_manager = type(
-                "ClientManagerStub",
-                (),
-                {
-                    "connect": lambda self: None,
-                    "disconnect": lambda self: None,
-                    "list_entries": lambda self, *args, **kwargs: [],
-                    "get_entry": lambda self, entry_id: {"id": entry_id, "name": entry_id},
-                },
-            )()
+                client_manager = KalturaClientManager(configuration, logger)
+            except Exception:  # pragma: no cover - fallback for missing SDK
+                client_manager = type(
+                    "ClientManagerStub",
+                    (),
+                    {
+                        "connect": lambda self: None,
+                        "disconnect": lambda self: None,
+                        "list_entries": lambda self, *args, **kwargs: [],
+                        "get_entry": lambda self, entry_id: {"id": entry_id, "name": entry_id},
+                    },
+                )()
 
         manager = BackupManager(
             configuration=configuration,
@@ -78,11 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         if args.retry_failed:
-            failed_entries = [
-                entry
-                for entry in state_manager.entries.values()
-                if entry.status is BackupStatus.FAILED
-            ]
+            failed_entries = state_manager.failed_entries()
             if not failed_entries:
                 print("No failed entries found in state to retry.")
                 return 0

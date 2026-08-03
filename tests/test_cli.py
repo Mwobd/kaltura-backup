@@ -56,3 +56,47 @@ def test_main_returns_error_code_for_missing_config(tmp_path: Path, capsys) -> N
 
     assert exit_code == 2
     assert "Configuration error" in captured.err
+
+
+class DummyClientManager:
+    def connect(self) -> None:
+        return None
+
+    def disconnect(self) -> None:
+        return None
+
+    def list_entries(self, *args, **kwargs):
+        return []
+
+    def get_entry(self, entry_id: str):
+        return {"id": entry_id, "name": "demo"}
+
+
+def test_main_retries_failed_entries_from_state(tmp_path: Path, capsys) -> None:
+    config_path = tmp_path / "config.ini"
+    state_path = tmp_path / "backup_state.json"
+
+    config_path.write_text(
+        "[Connection]\nPartnerId = 123\nAdminSecret = secret\nServiceUrl = https://example.invalid\n"
+        "[Paths]\nBackupDir = backups\nCsvDir = csv\nLogDir = logs\nReportDir = reports\nStateFile = " + str(state_path).replace('\\', '/') + "\n"
+        "[Download]\nWorkers = 1\nRetryCount = 0\nRetryDelaySeconds = 1\nTimeout = 5\nSkipOlderThanHours = 1\nResumeDownloads = false\nVerifyChecksum = false\n"
+        "[Export]\nSaveMetadata = true\nSaveApiResponses = false\nSaveCaptions = false\nSaveThumbnails = false\nSaveAttachments = false\n"
+        "[Logging]\nLevel = INFO\nKeepLogs = 1\n",
+        encoding="utf-8",
+    )
+
+    state_path.write_text(
+        '{"format_version": 1, "partner_id": 123, "created_at": 0, "updated_at": 0, "statistics": {}, "entries": {"entry-1": {"entry_id": "entry-1", "name": "demo", "updated_at": 1, "created_at": 1, "status": "FAILED", "downloads": {}, "retry": {}}}}',
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        ["--config", str(config_path), "--retry-failed"],
+        client_manager_factory=lambda configuration, logger: DummyClientManager(),
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Starting Kaltura backup" in captured.out
+    assert state_path.exists()

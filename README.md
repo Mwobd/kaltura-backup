@@ -14,6 +14,12 @@ A small Python utility for creating Kaltura backups from a local configuration.
 4. Run the tool:
    - `python -m kaltura_backup --config config.ini`
 
+To preview what would happen without writing backup artifacts, use:
+
+```bat
+python -m kaltura_backup --config config.ini --dry-run
+```
+
 To retry only entries that were previously marked as failed in the saved state, use:
 
 ```bat
