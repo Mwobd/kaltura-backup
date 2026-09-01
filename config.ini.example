@@ -1,38 +1,104 @@
+; ============================================================================
+; Kaltura Backup Configuration File
+; ============================================================================
+; This file configures the Kaltura backup application. All sections and
+; parameters below are required unless marked as (optional).
+
 [Connection]
+; Kaltura partner ID (required)
 PartnerId = 123
+
+; Kaltura admin secret for authentication (required)
 AdminSecret = your-admin-secret
+
+; Kaltura API service URL (required)
 ServiceUrl = https://api.de.kaltura.com/api_v3/testme/
+
+; Base URL for the playManifest API used to download media (optional, default: https://api.kaltura.com/p/)
+; This URL will be used to construct the media download URL in the format:
+; {PlayManifestUrl}{PartnerId}/sp/{PartnerId}00/playManifest/entryId/{entryId}/format/download/protocol/https/flavorParamIds/0/ks/{ks}
+PlayManifestUrl = https://api.frp2.ovp.kaltura.com/p/
+
+; Session expiry time in seconds (optional, default: 86400 = 24 hours)
 Expiry = 86400
+
+; Additional Kaltura session privileges (optional)
+; The privilege "disableentitlement" is automatically added by the script
+; Comma-separated list of additional privileges if needed
 Privileges = 
 
 [Paths]
+; Directory where backup entry folders will be created (required)
 BackupDir = backup
+
+; Directory for CSV exports (optional, currently unused) (required)
 CsvDir = csv
+
+; Directory for log files (required)
 LogDir = logs
+
+; Directory for report files (required)
 ReportDir = reports
+
+; File path for the backup state tracker (required)
+; Tracks which entries have been backed up to enable resume functionality
 StateFile = backup_state.json
 
 [Download]
+; Number of parallel download worker threads (required, range: 1-4)
+; Use 1 for single-threaded, higher values for concurrent downloads
 Workers = 1
+
+; Number of times to retry failed downloads (required, minimum: 0)
 RetryCount = 2
+
+; Delay between retries in seconds (required, minimum: 0)
 RetryDelaySeconds = 0
+
+; HTTP request timeout in seconds (required, minimum: 1)
 Timeout = 30
+
+; Skip entries older than this many hours (required, minimum: 0)
+; Set to 0 to include all entries
 SkipOlderThanHours = 0
+
+; Resume from where the previous backup left off (required)
+; If true: skip entries marked as completed, but still re-download metadata/captions/thumbnails/attachments
+; If false: start fresh, re-download everything
 ResumeDownloads = false
+
+; Verify downloaded file checksums (required)
+; Note: This feature is not yet fully implemented
 VerifyChecksum = false
 
 [Export]
+; Download and save custom metadata as CSV files (required)
 SaveMetadata = true
+
+; Save raw API responses as JSON files (required)
 SaveApiResponses = true
+
+; Download and save captions/subtitles (required)
 SaveCaptions = false
+
+; Download and save entry thumbnails (required)
 SaveThumbnails = false
+
+; Download and save entry attachments (required)
 SaveAttachments = false
 
 [Logging]
+; Log level for console and file output (required)
+; Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL
 Level = INFO
+
+; Number of days to keep log files (required)
 KeepLogs = 7
 
 [metadata_profiles]
+; Custom metadata profiles to download for each entry (optional, empty section is valid)
+; Format: profile_id = field_name_1, field_name_2, field_name_3, ...
+; Example entries (these are specific to your Kaltura configuration):
 4696 = Attributie, LinkNaarBron, LinkNaarLicentievoorwaarden
 4694 = VrijwaringsverklaringPortretrecht
 4695 = Contractpartij, Contractnummer, Artikel24ARVODI2018OngewijzigdVanKrachtInContract

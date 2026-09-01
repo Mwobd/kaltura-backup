@@ -31,6 +31,7 @@ DEFAULT_CONFIG_TEMPLATE = """[Connection]
 PartnerId = 123
 AdminSecret = your-admin-secret
 ServiceUrl = https://www.kaltura.com
+PlayManifestUrl = https://api.kaltura.com/p/
 Expiry = 86400
 Privileges = 
 
@@ -78,6 +79,7 @@ class ConnectionConfig:
     partner_id: int
     admin_secret: str
     service_url: str
+    play_manifest_url: str = "https://api.kaltura.com/p/"
     expiry: int = 86400
     privileges: str = ""
 
@@ -323,6 +325,11 @@ class ConfigLoader:
             service_url=self._require(
                 "Connection",
                 "ServiceUrl",
+            ),
+            play_manifest_url=self._parser.get(
+                "Connection",
+                "PlayManifestUrl",
+                fallback="https://api.kaltura.com/p/",
             ),
             expiry=self._parser.getint(
                 "Connection",

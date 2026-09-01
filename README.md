@@ -71,6 +71,50 @@ from kaltura_backup import ensure_default_config
 ensure_default_config("config.ini")
 ```
 
+## Backup output structure and file naming
+
+The backup tool creates a folder structure under your configured backup destination. Each entry gets its own folder, and various backup artifacts are stored within.
+
+### Folder structure
+
+```
+backup_destination/
+??? entry_1_id/
+?   ??? media.mp4
+?   ??? metadata.csv
+?   ??? captions.vtt
+?   ??? thumbnail.jpg
+?   ??? attachment.txt
+?   ??? api_response.json
+??? entry_2_id/
+?   ??? audio.mp3
+?   ??? metadata.csv
+?   ??? ...
+??? report.json
+```
+
+The root of the backup destination contains a `report.json` file with overall backup statistics.
+
+### Downloaded artifacts and file naming
+
+For each Kaltura entry, the following artifacts are downloaded **if present** and **if enabled** in the configuration:
+
+| Artifact | Filename | Enabled by | Description |
+|----------|----------|-----------|-------------|
+| **Media** | `media.mp4`, `audio.mp3`, `image.jpg`, or `media.bin` | `Export.SaveMedia` | The main media file. Format depends on media type: video ? `.mp4`, audio ? `.mp3`, image ? `.jpg`, other ? `.bin` |
+| **Custom Metadata** | `metadata.csv` | `Export.SaveMetadata` | Custom metadata in CSV format with header row containing `entry_id`, `name`, and configured metadata field names (from `[metadata_profiles]` section). Only includes profiles specified in the configuration. |
+| **Captions** | `captions.vtt` | `Export.SaveCaptions` | WebVTT caption file combining all available captions for the entry. Empty file if no captions are present. |
+| **Thumbnails** | `thumbnail.jpg` | `Export.SaveThumbnails` | Entry thumbnail image. Includes all available thumbnail assets for the entry. |
+| **Attachments** | `attachment.txt` | `Export.SaveAttachments` | Text file listing attachment URLs. One URL per line. Empty file if no attachments are present. |
+| **API Response** | `api_response.json` | `Export.SaveApiResponses` or `Export.SaveMetadata` | JSON response containing basic entry metadata (`entry_id` and `name`). Written whenever metadata or API responses are saved. |
+
+### Resume behavior
+
+When running with `ResumeDownloads = true` in the configuration:
+- Media files are **skipped** if they already exist in the backup folder
+- Metadata, captions, attachments, images, and thumbnails are **always downloaded** and overwritten
+- This allows you to refresh supplementary data without re-downloading large media files
+
 ## Project roadmap status
 
 The implementation has moved beyond the initial scaffold and is now in the later operational phases.

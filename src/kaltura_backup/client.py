@@ -340,13 +340,20 @@ class KalturaClientManager:
 
             client = KalturaClient(cfg)
 
+            # Add disableentitlement to privileges
+            privileges = self._configuration.connection.privileges or ""
+            privilege_list = [p.strip() for p in privileges.split(",") if p.strip()]
+            if "disableentitlement" not in privilege_list:
+                privilege_list.append("disableentitlement")
+            privileges_str = ",".join(privilege_list)
+
             ks = client.session.start(
                 self._configuration.connection.admin_secret,
                 None,
                 KalturaSessionType.ADMIN,
                 self._configuration.connection.partner_id,
                 self._configuration.connection.expiry,
-                self._configuration.connection.privileges,
+                privileges_str,
             )
 
             client.setKs(ks)
@@ -730,17 +737,24 @@ class KalturaClientManager:
         self,
         entry_id: str,
     ) -> str:
-        entry = self.get_entry(entry_id)
-
-        if hasattr(entry, "getDownloadUrl"):
-            return entry.getDownloadUrl()
-
-        if hasattr(entry, "downloadUrl"):
-            return entry.downloadUrl
-
-        raise ClientError(
-            "Kaltura entry object does not expose a media download URL."
-        )
+        """
+        Build the media download URL using the playManifest API.
+        
+        The URL format is:
+        {base}{pid}/sp/{pid}00/playManifest/entryId/{entry_id}/format/download/protocol/https/flavorParamIds/0/ks/{ks}
+        """
+        with self.session() as session:
+            pid = self._configuration.connection.partner_id
+            base = self._configuration.connection.play_manifest_url
+            ks = session.ks
+            
+            # Construct the download URL
+            url = (
+                f"{base}{pid}/sp/{pid}00/playManifest/entryId/{entry_id}/"
+                f"format/download/protocol/https/flavorParamIds/0/ks/{ks}"
+            )
+            
+            return url
 
     # ------------------------------------------------------------------
 
@@ -759,7 +773,7 @@ class KalturaClientManager:
             else None,
         )
 
-        # Do not set metadataObjectTypeEqual to a raw int — the SDK expects
+        # Do not set metadataObjectTypeEqual to a raw int - the SDK expects
         # an enum-like object with a `getValue()` method. Leave the filter
         # as-is and let callers specify the correct typed value when needed.
 
