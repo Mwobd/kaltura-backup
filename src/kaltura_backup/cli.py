@@ -8,6 +8,7 @@ import sys
 from . import __version__
 from .backup import BackupManager
 from .config import load_configuration
+from .database import DatabaseManager
 from .exceptions import BackupError, ConfigurationError
 from .logging_utils import initialize_logger
 from .state import StateManager
@@ -32,6 +33,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--retry-failed",
         action="store_true",
         help="Retry only entries that were previously marked as failed in the saved state",
+    )
+    parser.add_argument(
+        "--db-sync",
+        "--sync-db",
+        "--database-sync",
+        action="store_true",
+        dest="database_sync",
+        help="Sync Kaltura entries to the configured MySQL database once per day",
+    )
+    parser.add_argument(
+        "--force-db-sync",
+        "--force-sync-db",
+        action="store_true",
+        dest="force_database_sync",
+        help="Force a database sync even when it has already run today",
     )
     parser.add_argument(
         "--version",
@@ -74,6 +90,24 @@ def main(
                         "get_entry": lambda self, entry_id: {"id": entry_id, "name": entry_id},
                     },
                 )()
+
+        if args.database_sync:
+            if configuration.database is None:
+                print("Database sync requested but no [mysql] section is configured.", file=sys.stderr)
+                return 2
+            try:
+                DatabaseManager(configuration).sync_if_due(client_manager, force=args.force_database_sync)
+                print("Database sync completed.")
+                return 0
+            except Exception as exc:  # pragma: no cover - surfaced in CLI output
+                print(f"Database sync error: {exc}", file=sys.stderr)
+                return 1
+
+        if configuration.database is not None:
+            try:
+                DatabaseManager(configuration).sync_if_due(client_manager, force=args.force_database_sync)
+            except Exception as exc:
+                print(f"Database sync skipped because of an error: {exc}", file=sys.stderr)
 
         manager = BackupManager(
             configuration=configuration,

@@ -217,6 +217,44 @@ def test_backup_manager_respects_shutdown_signal(tmp_path: Path) -> None:
     assert manager._should_stop() is True
 
 
+def test_backup_manager_supports_dict_like_entry_payloads(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    state_manager = StateManager(configuration)
+    logger = initialize_logger(configuration)
+
+    class DictClientManager(DummyClientManager):
+        def list_all_entries(self):
+            return [{"id": "entry-dict", "name": "demo", "updatedAt": 9, "createdAt": 1}]
+
+        def get_entry(self, entry_id: str):
+            return {
+                "id": entry_id,
+                "name": "demo",
+                "referenceId": "ref-1",
+                "userId": "owner-1",
+                "mediaType": "video",
+                "duration": 42,
+                "size": 99,
+                "updatedAt": 9,
+                "createdAt": 1,
+            }
+
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=state_manager,
+        client_manager=DictClientManager(),
+        logger=logger,
+    )
+
+    entries = manager.discover_entries()
+    assert entries[0].entry_id == "entry-dict"
+    assert entries[0].name == "demo"
+    assert entries[0].media_type == ""
+
+    processed = manager.run(entries)
+    assert processed[0].status is BackupStatus.COMPLETED
+
+
 def test_backup_manager_disconnects_client_on_failure(tmp_path: Path) -> None:
     configuration = _make_configuration(tmp_path)
     state_manager = StateManager(configuration)

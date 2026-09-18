@@ -7,8 +7,9 @@ A small Python utility for creating Kaltura backups from a local configuration.
 1. Create and activate a virtual environment:
    - `py -3.11 -m venv .venv`
    - `.venv\Scripts\activate`
-2. Install the package:
-   - `pip install -e .`
+2. Install the required dependencies:
+   - `pip install -r requirements.txt`
+   - or, for editable local development: `pip install -e .`
 3. Copy the example configuration and adjust it:
    - `copy config.ini.example config.ini`
 4. Run the tool:
@@ -25,6 +26,84 @@ To retry only entries that were previously marked as failed in the saved state, 
 ```bat
 python -m kaltura_backup --config config.ini --retry-failed
 ```
+
+To sync Kaltura base entries into MySQL, use the database sync command:
+
+```bat
+python -m kaltura_backup --config config.ini --db-sync
+```
+
+By default, the database sync only runs once each day. To force a second sync on the same day, use:
+
+```bat
+python -m kaltura_backup --config config.ini --db-sync --force-db-sync
+```
+
+The MySQL sync is optional. If the `[mysql]` section is absent, the backup workflow still runs locally without database syncing.
+
+## MySQL sync and database schema
+
+The database-backed sync is designed to keep a mirrored view of Kaltura base entries in MySQL. The schema created by the app includes:
+
+- `kaltura_entries`
+- `db_sync_state`
+
+The relevant timestamp-related columns are:
+
+- `CreatedAt` and `UpdatedAt` for raw UNIX epoch values
+- `CreatedAtHR` and `UpdatedAtHR` for converted human-readable timestamps
+- `EntryUpdated` for the last sync day used to determine stale entries
+
+This is the schema used by the app when the sync is enabled:
+
+```sql
+CREATE TABLE IF NOT EXISTS kaltura_entries (
+   EntryId VARCHAR(255) NOT NULL PRIMARY KEY,
+   Name VARCHAR(255) NULL,
+   Description TEXT NULL,
+   PartnerId BIGINT NULL,
+   UserId VARCHAR(255) NULL,
+   CreatorId VARCHAR(255) NULL,
+   Tags TEXT NULL,
+   AdminTags TEXT NULL,
+   Status INT NULL,
+   Type INT NULL,
+   CreatedAt BIGINT NULL,
+   UpdatedAt BIGINT NULL,
+   CreatedAtHR VARCHAR(50) NULL,
+   UpdatedAtHR VARCHAR(50) NULL,
+   DownloadUrl TEXT NULL,
+   ThumbnailUrl TEXT NULL,
+   DataUrl TEXT NULL,
+   ReferenceId TEXT NULL,
+   MediaType INT NULL,
+   Duration INT NULL,
+   Width INT NULL,
+   Height INT NULL,
+   EntryUpdated VARCHAR(20) NULL,
+   IsDeleted TINYINT(1) NOT NULL DEFAULT 0,
+   IsDeletedDate VARCHAR(20) NULL,
+   RawXml LONGTEXT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+If you are upgrading an existing database, confirm those columns exist before relying on the stale-entry checks. The app will create the table on first run when the table does not exist, but it does not automatically add missing columns to an already-created table.
+
+During import, every XML leaf tag is also mapped to a safe MySQL column name. Known Kaltura tags use the existing typed columns; previously unknown tags are added as nullable `TEXT` columns automatically. The `<id>` tag is mapped to `EntryId` and is not duplicated as an `ID` column. Existing databases are migrated by removing the obsolete `ID` column when the schema is checked.
+
+## MySQL configuration
+
+The example file contains an optional `[mysql]` block. Set your host, database name, and credentials there to enable database sync:
+
+```ini
+[mysql]
+host = localhost
+database = backup_10206
+user = backupuser10206
+password = <dbuserpassword>
+```
+
+The code also supports `root_user` and `root_password` for bootstrap scenarios, but the normal runtime connection uses the non-root `user` and `password` values.
 
 ## Windows Task Scheduler
 

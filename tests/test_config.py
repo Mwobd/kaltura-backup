@@ -44,3 +44,23 @@ def test_loader_reads_metadata_profile_ids_and_field_names(tmp_path: Path) -> No
         "4699": ("Status", "EindeBewaartermijn", "UitzonderingOpVernietiging"),
         "4693": ("Proces", "Afdoeningsjaar", "UitgeplaatstBijNIBG", "LinkNaarNIBG"),
     }
+
+
+def test_loader_reads_mysql_configuration(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.ini"
+    config_path.write_text(
+        "[Connection]\nPartnerId = 123\nAdminSecret = secret\nServiceUrl = https://example.invalid\n"
+        "[Paths]\nBackupDir = backup\nCsvDir = csv\nLogDir = logs\nReportDir = reports\nStateFile = state.json\n"
+        "[Download]\nWorkers = 1\nRetryCount = 0\nRetryDelaySeconds = 0\nTimeout = 5\nSkipOlderThanHours = 0\nResumeDownloads = false\nVerifyChecksum = false\n"
+        "[Export]\nSaveMetadata = true\nSaveApiResponses = false\nSaveCaptions = false\nSaveThumbnails = false\nSaveAttachments = false\n"
+        "[mysql]\nhost = localhost\ndatabase = backup_10206\nroot_user = root\nroot_password = secret\nuser = backupuser10206\npassword = userpass\n"
+        "[Logging]\nLevel = INFO\nKeepLogs = 1\n",
+        encoding="utf-8",
+    )
+
+    configuration = ConfigLoader(config_path).load()
+
+    assert configuration.database is not None
+    assert configuration.database.host == "localhost"
+    assert configuration.database.database == "backup_10206"
+    assert configuration.database.user == "backupuser10206"

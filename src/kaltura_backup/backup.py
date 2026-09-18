@@ -12,8 +12,9 @@ import json
 import signal
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait
+from html import unescape
 from xml.etree import ElementTree
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, unquote_plus
 from typing import Any
 
 import requests
@@ -23,6 +24,103 @@ from .exceptions import BackupCancelled, PermanentError, RetryableError
 from .logging_utils import BackupLogger, EventId
 from .models import ArtifactType, BackupEntry, BackupStatus
 from .state import StateManager
+
+
+def _to_snake_case(value: str) -> str:
+    """Convert CamelCase to snake_case for dict-like payloads."""
+
+    result: list[str] = []
+    for index, char in enumerate(value):
+        if char.isupper() and index and not value[index - 1].isupper():
+            result.append("_")
+        result.append(char.lower())
+    return "".join(result)
+
+
+def _read_value(item: Any, attr: str, fallback: Any = None) -> Any:
+    """Read a field from either a dict-like payload or a Kaltura SDK object."""
+
+    if item is None:
+        return fallback
+
+    if isinstance(item, dict):
+        for key in (attr, _to_snake_case(attr), attr.lower()):
+            if key in item:
+                value = item[key]
+                return value if value is not None else fallback
+        return fallback
+
+    getter = f"get{attr[0].upper()}{attr[1:]}"
+    for candidate in (getter, attr, _to_snake_case(attr)):
+        if hasattr(item, candidate):
+            value = getattr(item, candidate)
+            return value() if callable(value) else (value if value is not None else fallback)
+    return fallback
+
+
+def _normalize_xml_tag(tag: str) -> str:
+    """Normalize XML element names to a comparable form."""
+
+    if not tag:
+        return ""
+    name = tag.split("}")[-1]
+    return "".join(ch for ch in name if ch.isalnum() or ch in {"_", "-"}).lower()
+
+
+def _find_xml_value(root: ElementTree.Element, field_name: str) -> str:
+    """Search XML metadata for a field, ignoring attribute naming differences."""
+
+    normalized = _normalize_xml_tag(field_name)
+    candidates = {
+        normalized,
+        normalized.replace("-", ""),
+        normalized.replace("_", ""),
+    }
+
+    for element in root.iter():
+        tag_name = _normalize_xml_tag(element.tag)
+        if tag_name in candidates and element.text and element.text.strip():
+            return element.text.strip()
+
+    for element in root.iter():
+        tag_name = _normalize_xml_tag(element.tag)
+        if normalized in tag_name or tag_name in normalized:
+            if element.text and element.text.strip():
+                return element.text.strip()
+
+    return ""
+
+
+def _resolve_download_filename(response: Any, fallback_name: str, request_url: str | None = None) -> str:
+    """Best-effort extraction of the actual file name from a download response."""
+
+    headers = getattr(response, "headers", {}) or {}
+    disposition = headers.get("Content-Disposition") or headers.get("content-disposition")
+    url = getattr(response, "url", request_url) or request_url or ""
+
+    if disposition:
+        params = disposition.split(";")
+        for part in params:
+            item = part.strip()
+            if item.lower().startswith("filename*="):
+                raw = item.split("=", 1)[1].strip("\"'")
+                if raw:
+                    if "''" in raw:
+                        _, filename = raw.split("''", 1)
+                    else:
+                        filename = raw
+                    return unquote_plus(filename)
+            if item.lower().startswith("filename="):
+                raw = item.split("=", 1)[1].strip("\"'")
+                if raw:
+                    return unquote(raw)
+
+    parsed = urlparse(url)
+    candidate = unquote(parsed.path.split("/")[-1])
+    if candidate and "." in candidate:
+        return candidate
+
+    return fallback_name
 
 
 class BackupManager:
@@ -175,34 +273,26 @@ class BackupManager:
         if result is None:
             raise RetryableError("Entry lookup returned no data")
 
-        def value(item: Any, attr: str, fallback: Any = None) -> Any:
-            getter = f"get{attr[0].upper()}{attr[1:]}"
-            if hasattr(item, getter):
-                return getattr(item, getter)()
-            if hasattr(item, attr):
-                return getattr(item, attr)
-            return fallback
-
-        entry.name = str(value(result, "name", entry.name))
-        entry.reference_id = str(value(result, "referenceId", entry.reference_id))
-        entry.owner_id = str(value(result, "userId", entry.owner_id))
+        entry.name = str(_read_value(result, "name", entry.name))
+        entry.reference_id = str(_read_value(result, "referenceId", entry.reference_id))
+        entry.owner_id = str(_read_value(result, "userId", entry.owner_id))
         entry.media_type = str(
-            value(result, "mediaType", value(result, "type", entry.media_type) or "")
+            _read_value(result, "mediaType", _read_value(result, "type", entry.media_type) or "")
         )
         try:
-            entry.duration_seconds = int(value(result, "duration", entry.duration_seconds) or 0)
+            entry.duration_seconds = int(_read_value(result, "duration", entry.duration_seconds) or 0)
         except Exception:
             entry.duration_seconds = entry.duration_seconds
         try:
-            entry.size_bytes = int(value(result, "size", entry.size_bytes) or 0)
+            entry.size_bytes = int(_read_value(result, "size", entry.size_bytes) or 0)
         except Exception:
             entry.size_bytes = entry.size_bytes
         try:
-            entry.updated_at = int(value(result, "updatedAt", entry.updated_at) or 0)
+            entry.updated_at = int(_read_value(result, "updatedAt", entry.updated_at) or 0)
         except Exception:
             entry.updated_at = entry.updated_at
         try:
-            entry.created_at = int(value(result, "createdAt", entry.created_at) or 0)
+            entry.created_at = int(_read_value(result, "createdAt", entry.created_at) or 0)
         except Exception:
             entry.created_at = entry.created_at
 
@@ -240,6 +330,8 @@ class BackupManager:
                 try:
                     with requests.get(media_url, stream=True, timeout=30) as resp:
                         resp.raise_for_status()
+                        filename = _resolve_download_filename(resp, file_path.name, media_url)
+                        file_path = self._media_file_path(backup_dir, entry, filename)
                         with file_path.open("wb") as fh:
                             for chunk in resp.iter_content(chunk_size=8192):
                                 if chunk:
@@ -286,11 +378,7 @@ class BackupManager:
 
                     for meta in meta_objs:
                         # determine metadata id getter
-                        meta_id = None
-                        if hasattr(meta, "getId"):
-                            meta_id = getattr(meta, "getId")()
-                        elif hasattr(meta, "id"):
-                            meta_id = getattr(meta, "id")
+                        meta_id = _read_value(meta, "id")
 
                         if not meta_id:
                             continue
@@ -308,10 +396,9 @@ class BackupManager:
                         for field_name in fields:
                             if row.get(field_name):
                                 continue
-                            # try to find text for the field
-                            found = root.find(f".//{field_name}")
-                            if found is not None and found.text:
-                                row[field_name] = found.text
+                            value = _find_xml_value(root, field_name)
+                            if value:
+                                row[field_name] = value
 
                 writer.writerow(row)
 
@@ -337,20 +424,22 @@ class BackupManager:
             with captions_path.open("w", encoding="utf-8") as fh:
                 fh.write("WEBVTT\n")
                 for asset in assets:
-                    asset_id = None
-                    if hasattr(asset, "getId"):
-                        asset_id = getattr(asset, "getId")()
-                    elif hasattr(asset, "id"):
-                        asset_id = getattr(asset, "id")
+                    asset_id = _read_value(asset, "id")
 
                     if not asset_id:
                         continue
 
                     try:
                         vtt = self._client_manager.get_caption_webvtt(asset_id)
-                        fh.write(vtt)
-                        fh.write("\n")
-                        wrote_any = True
+                        text = vtt
+                        if isinstance(vtt, str) and vtt.startswith("http"):
+                            response = requests.get(vtt, timeout=30)
+                            response.raise_for_status()
+                            text = response.text
+                        if text:
+                            fh.write(text)
+                            fh.write("\n")
+                            wrote_any = True
                     except Exception:
                         continue
 
@@ -366,11 +455,7 @@ class BackupManager:
 
             thumb_written = False
             for thumb in thumbs:
-                thumb_id = None
-                if hasattr(thumb, "getId"):
-                    thumb_id = getattr(thumb, "getId")()
-                elif hasattr(thumb, "id"):
-                    thumb_id = getattr(thumb, "id")
+                thumb_id = _read_value(thumb, "id")
 
                 if not thumb_id:
                     continue
@@ -402,11 +487,7 @@ class BackupManager:
 
             att_written = False
             for att in atts:
-                att_id = None
-                if hasattr(att, "getId"):
-                    att_id = getattr(att, "getId")()
-                elif hasattr(att, "id"):
-                    att_id = getattr(att, "id")
+                att_id = _read_value(att, "id")
 
                 if not att_id:
                     continue
@@ -441,7 +522,10 @@ class BackupManager:
     def _is_image_entry(self, entry: BackupEntry) -> bool:
         return entry.media_type.lower() == "image"
 
-    def _media_file_path(self, backup_dir: Any, entry: BackupEntry) -> Any:
+    def _media_file_path(self, backup_dir: Any, entry: BackupEntry, explicit_name: str | None = None) -> Any:
+        if explicit_name:
+            return backup_dir / explicit_name
+
         name = entry.media_type.lower()
 
         if "video" in name:
@@ -452,6 +536,17 @@ class BackupManager:
             filename = "image.jpg"
         else:
             filename = "media.bin"
+
+        matches = [
+            backup_dir / filename,
+            backup_dir / "media.mp4",
+            backup_dir / "audio.mp3",
+            backup_dir / "image.jpg",
+            backup_dir / "media.bin",
+        ]
+        for candidate in matches:
+            if candidate.exists():
+                return candidate
 
         return backup_dir / filename
 
@@ -583,21 +678,13 @@ class BackupManager:
     def discover_entries(self) -> list[BackupEntry]:
         """Discover entries from the client manager and return them as backup entries."""
 
-        def value(item: Any, attr: str, fallback: Any) -> Any:
-            getter = f"get{attr[0].upper()}{attr[1:]}"
-            if hasattr(item, getter):
-                return getattr(item, getter)()
-            if hasattr(item, attr):
-                return getattr(item, attr)
-            return fallback
-
         result = self._client_manager.list_all_entries()
         return [
             BackupEntry(
-                entry_id=str(value(item, "id", "")),
-                name=str(value(item, "name", "")),
-                updated_at=int(value(item, "updatedAt", 0) or 0),
-                created_at=int(value(item, "createdAt", 0) or 0),
+                entry_id=str(_read_value(item, "id", "")),
+                name=str(_read_value(item, "name", "")),
+                updated_at=int(_read_value(item, "updatedAt", 0) or 0),
+                created_at=int(_read_value(item, "createdAt", 0) or 0),
             )
             for item in result
         ]

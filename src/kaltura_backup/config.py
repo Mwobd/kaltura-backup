@@ -58,6 +58,14 @@ SaveCaptions = false
 SaveThumbnails = false
 SaveAttachments = false
 
+[mysql]
+host = localhost
+database = backup_10206
+root_user = root
+root_password = 
+user = backupuser10206
+password = 
+
 [metadata_profiles]
 
 [Logging]
@@ -145,6 +153,19 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DatabaseConfig:
+    """MySQL connection information for optional database-backed sync tasks."""
+
+    host: str = "localhost"
+    database: str = "backup"
+    root_user: str = "root"
+    root_password: str = ""
+    user: str = "backupuser"
+    password: str = ""
+    port: int = 3306
+
+
+@dataclass(frozen=True, slots=True)
 class Configuration:
     """
     Complete application configuration.
@@ -156,6 +177,7 @@ class Configuration:
     export: ExportConfig
     metadata: MetadataConfig
     logging: LoggingConfig
+    database: DatabaseConfig | None = None
 
 
 # ============================================================================
@@ -181,7 +203,6 @@ class ConfigLoader:
         "Paths",
         "Download",
         "Export",
-        "metadata_profiles",
         "Logging",
     )
 
@@ -221,6 +242,7 @@ class ConfigLoader:
             export=self._load_export(),
             metadata=self._load_metadata(),
             logging=self._load_logging(),
+            database=self._load_database(),
         )
 
         self._create_directories(configuration)
@@ -451,14 +473,18 @@ class ConfigLoader:
 
     def _load_metadata(self) -> MetadataConfig:
         """
-        Load the [metadata_profiles] section.
+        Load the optional [metadata_profiles] section.
         """
 
         section = "metadata_profiles"
 
         profile_fields: dict[str, tuple[str, ...]] = {}
+        if not self._parser.has_section(section):
+            return MetadataConfig(profile_fields=profile_fields)
 
         for profile_id, raw_fields in self._parser.items(section):
+            if profile_id == "DEFAULT":
+                continue
             profile_fields[profile_id.strip()] = tuple(
                 field.strip()
                 for field in raw_fields.split(",")
@@ -470,6 +496,23 @@ class ConfigLoader:
         )
 
     # ---------------------------------------------------------------------
+
+    def _load_database(self) -> DatabaseConfig | None:
+        """Load the optional [mysql] section used for database-backed sync tasks."""
+
+        if not self._parser.has_section("mysql"):
+            return None
+
+        section = "mysql"
+        return DatabaseConfig(
+            host=self._parser.get(section, "host", fallback="localhost"),
+            database=self._parser.get(section, "database", fallback="backup"),
+            root_user=self._parser.get(section, "root_user", fallback="root"),
+            root_password=self._parser.get(section, "root_password", fallback=""),
+            user=self._parser.get(section, "user", fallback="backupuser"),
+            password=self._parser.get(section, "password", fallback=""),
+            port=self._parser.getint(section, "port", fallback=3306),
+        )
 
     def _load_logging(self) -> LoggingConfig:
         """

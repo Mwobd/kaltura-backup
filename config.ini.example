@@ -87,6 +87,14 @@ SaveThumbnails = false
 ; Download and save entry attachments (required)
 SaveAttachments = false
 
+[mysql]
+host = localhost
+database = backup_10206
+root_user = root
+root_password = <dbrootpassword>
+user = backupuser10206
+password = <dbuserpassword>
+
 [Logging]
 ; Log level for console and file output (required)
 ; Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL
