@@ -44,6 +44,9 @@ ReportDir = reports
 ; Tracks which entries have been backed up to enable resume functionality
 StateFile = backup_state.json
 
+; Directory for raw XML responses from Kaltura API requests (optional, default: xml)
+XmlDir = xml
+
 [Download]
 ; Number of parallel download worker threads (required, range: 1-4)
 ; Use 1 for single-threaded, higher values for concurrent downloads
@@ -98,7 +101,7 @@ password = <dbuserpassword>
 [Logging]
 ; Log level for console and file output (required)
 ; Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL
-Level = INFO
+Level = DEBUG
 
 ; Number of days to keep log files (required)
 KeepLogs = 7

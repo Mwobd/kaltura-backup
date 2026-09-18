@@ -101,3 +101,49 @@ def test_main_retries_failed_entries_from_state(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert "Starting Kaltura backup" in captured.out
     assert state_path.exists()
+
+
+def test_database_sync_connects_and_disconnects_client(tmp_path: Path, monkeypatch, capsys) -> None:
+    config_path = tmp_path / "config.ini"
+    config_path.write_text(
+        "[Connection]\nPartnerId = 123\nAdminSecret = secret\nServiceUrl = https://example.invalid\n"
+        "[Paths]\nBackupDir = backup\nCsvDir = csv\nLogDir = logs\nReportDir = reports\nStateFile = state.json\n"
+        "[Download]\nWorkers = 1\nRetryCount = 0\nRetryDelaySeconds = 0\nTimeout = 5\nSkipOlderThanHours = 0\nResumeDownloads = false\nVerifyChecksum = false\n"
+        "[Export]\nSaveMetadata = false\nSaveApiResponses = false\nSaveCaptions = false\nSaveThumbnails = false\nSaveAttachments = false\n"
+        "[mysql]\nhost = localhost\ndatabase = backup\nuser = user\npassword = pass\n"
+        "[Logging]\nLevel = INFO\nKeepLogs = 1\n",
+        encoding="utf-8",
+    )
+
+    class Client:
+        def __init__(self) -> None:
+            self.connected = False
+            self.events = []
+
+        def connect(self) -> None:
+            self.connected = True
+            self.events.append("connect")
+
+        def disconnect(self) -> None:
+            self.connected = False
+            self.events.append("disconnect")
+
+    class Database:
+        def __init__(self, configuration, logger) -> None:
+            self.logger = logger
+
+        def sync_if_due(self, client_manager, force=False):
+            assert client_manager.connected
+            return True
+
+    client = Client()
+    monkeypatch.setattr("kaltura_backup.cli.DatabaseManager", Database)
+
+    exit_code = main(
+        ["--config", str(config_path), "--db-sync"],
+        client_manager_factory=lambda configuration, logger: client,
+    )
+
+    assert exit_code == 0
+    assert client.events == ["connect", "disconnect"]
+    assert "Database sync completed." in capsys.readouterr().out

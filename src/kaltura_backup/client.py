@@ -22,6 +22,8 @@ import time
 import sys
 import traceback
 import os
+import re
+from datetime import UTC, datetime
 
 #from collections import deque
 from functools import wraps
@@ -35,6 +37,7 @@ KALTURA_SDK_AVAILABLE = True
 try:
     from KalturaClient import KalturaClient  # type: ignore[import-not-found]
     from KalturaClient import KalturaConfiguration  # type: ignore[import-not-found]
+    from KalturaClient.Base import IKalturaLogger  # type: ignore[import-not-found]
     try:
         from KalturaClient import KalturaSessionType  # type: ignore[import-not-found]
     except ImportError:
@@ -75,6 +78,7 @@ except ImportError as exc:  # pragma: no cover - exercised when SDK is absent or
         ) from exc
 
     KALTURA_SDK_AVAILABLE = False
+    IKalturaLogger = object  # type: ignore[misc,assignment]
     try:
         tb = traceback.format_exc()
         info = (
@@ -138,6 +142,17 @@ RETRY_COUNT = 3
 RETRY_DELAY = 5
 
 T = TypeVar("T")
+
+
+class _KalturaSdkLogger(IKalturaLogger):
+    """Adapt Kaltura SDK string logging to the application DEBUG logger."""
+
+    def __init__(self, logger: BackupLogger) -> None:
+        self._logger = logger
+        self._xml_response_handler: Callable[[str, Any], None] | None = None
+
+    def log(self, message: str) -> None:
+        self._logger.debug(EventId.API_ERROR, f"Kaltura SDK: {message}")
 
 
 # ============================================================================
@@ -263,6 +278,10 @@ class KalturaClientManager:
 
         self._connected = False
 
+    def set_xml_response_handler(self, handler: Callable[[str, Any], None] | None) -> None:
+        """Register an optional handler for raw API XML responses."""
+        self._xml_response_handler = handler
+
     # ------------------------------------------------------------------
     # Connection management
     # ------------------------------------------------------------------
@@ -337,8 +356,11 @@ class KalturaClientManager:
             cfg.serviceUrl = (
                 self._configuration.connection.service_url
             )
+            cfg.requestTimeout = self._configuration.download.timeout
+            cfg.setLogger(_KalturaSdkLogger(self._logger))
 
             client = KalturaClient(cfg)
+            self._install_xml_capture(client)
 
             # Add disableentitlement to privileges
             privileges = self._configuration.connection.privileges or ""
@@ -368,6 +390,38 @@ class KalturaClientManager:
             raise AuthenticationError(
                 str(exc)
             ) from exc
+
+    def _install_xml_capture(self, client: KalturaClient) -> None:
+        """Capture raw XML responses directly from the SDK HTTP boundary."""
+
+        original_http_request = client.doHttpRequest
+
+        def do_http_request(*args, **kwargs):
+            payload = original_http_request(*args, **kwargs)
+            url = str(args[0] if args else kwargs.get("url", ""))
+            match = re.search(r"/service/([^/]+)/action/([^/?]+)", url)
+            request_name = f"{match.group(1)}_{match.group(2)}" if match else "kaltura_request"
+            self._save_xml_response(request_name, payload)
+            return payload
+
+        client.doHttpRequest = do_http_request
+
+    def _save_xml_response(self, request_name: str, payload: Any) -> None:
+        try:
+            xml_dir = self._configuration.paths.xml_dir
+            xml_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", request_name).strip("._") or "kaltura_request"
+            timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+            path = xml_dir / f"{safe_name}_{timestamp}.xml"
+            if isinstance(payload, bytes):
+                path.write_bytes(payload)
+            else:
+                path.write_text(str(payload), encoding="utf-8")
+            self._logger.debug(EventId.API_ERROR, f"Saved raw XML response to {path}")
+            if self._xml_response_handler is not None:
+                self._xml_response_handler(request_name, payload)
+        except Exception as exc:
+            self._logger.warning(EventId.WARNING, f"Could not save raw XML response: {exc}")
 
     # ------------------------------------------------------------------
 
@@ -558,6 +612,18 @@ class KalturaClientManager:
             "Verify the installed Kaltura SDK and its dependencies. "
             f"Available client attributes: {sample}"
         )
+
+    @staticmethod
+    def _media_entry_filter(filter_object: Any = None) -> Any:
+        """Restrict default entry discovery to media entries (type 1)."""
+        if filter_object is not None or KalturaBaseEntryFilter is None:
+            return filter_object
+        entry_filter = KalturaBaseEntryFilter()
+        if hasattr(entry_filter, "setTypeIn"):
+            entry_filter.setTypeIn("1")
+        else:
+            entry_filter.typeIn = "1"
+        return entry_filter
 
     # ------------------------------------------------------------------
 
@@ -927,13 +993,13 @@ class KalturaClientManager:
     # ------------------------------------------------------------------
 
     @retryable
-    def get_caption_webvtt(
+    def get_caption_json(
         self,
         caption_asset_id: str,
     ) -> str:
         with self.session() as session:
             try:
-                return self._caption_asset_service(session.client).serveWebVTT(
+                return self._caption_asset_service(session.client).serveAsJson(
                     caption_asset_id,
                 )
             except Exception as exc:
@@ -1008,6 +1074,7 @@ class KalturaClientManager:
         Retrieve a page of entries.
         """
 
+        filter_object = self._media_entry_filter(filter_object)
         with self.session() as session:
 
             try:
@@ -1034,11 +1101,16 @@ class KalturaClientManager:
         Retrieve all entries using Kaltura paging.
         """
 
+        filter_object = self._media_entry_filter(filter_object)
         entries: list[Any] = []
         pager = self._initialize_pager(page_size=page_size, page_index=1)
         page = 1
 
         while True:
+            self._logger.info(
+                EventId.ENTRY_DISCOVERED,
+                f"Requesting Kaltura entry page {page} (page size {page_size}, timeout {self._configuration.download.timeout}s).",
+            )
             with self.session() as session:
                 try:
                     response = self._entry_service(session.client).list(
@@ -1049,6 +1121,10 @@ class KalturaClientManager:
                     self._translate_exception(exc)
 
             batch = self._objects_from_response(response)
+            self._logger.info(
+                EventId.ENTRY_DISCOVERED,
+                f"Kaltura entry page {page} returned {len(batch)} entries.",
+            )
             if not batch:
                 break
 

@@ -41,11 +41,27 @@ python -m kaltura_backup --config config.ini --db-sync --force-db-sync
 
 The MySQL sync is optional. If the `[mysql]` section is absent, the backup workflow still runs locally without database syncing.
 
+When MySQL is configured, the normal backup workflow uses `kaltura_entries` as its entry selection source. It backs up only rows where `Type = 1` and `IsDeleted = 0`, and fetches those selected entry IDs from Kaltura. Other entry types and deleted rows are ignored. Without MySQL configuration, the workflow retains API-wide entry discovery.
+
+Database sync progress is written to the console and to `logs/kaltura_backup.log`. The log records the MySQL connection target, schema checks, daily-sync skips, Kaltura entry counts, progress while entries are stored, and completion. The configured `[Download] Timeout` value is also applied to Kaltura SDK API requests. If the sync fails or the API does not respond before that timeout, the CLI prints the error and writes the full traceback to the log file. A sync run that appears to repeat API requests should be stopped and its log checked; the sync uses the Kaltura client's all-pages method once and then processes the returned entries.
+
+The database-sync command forces `DEBUG` logging at runtime, including when an existing `config.ini` still specifies `INFO`. The generated configuration and `config.ini.example` also use `Level = DEBUG`, which includes Kaltura SDK request and retry messages. For other commands, set the value manually in an existing `config.ini`:
+
+```ini
+[Logging]
+Level = DEBUG
+```
+
+The Kaltura SDK has its own retry cycle. A request timeout is per attempt, so a failed request may take longer than the configured timeout while the SDK performs its built-in retries. The DEBUG log records each SDK retry and its delay.
+
 ## MySQL sync and database schema
 
 The database-backed sync is designed to keep a mirrored view of Kaltura base entries in MySQL. The schema created by the app includes:
 
 - `kaltura_entries`
+- `kaltura_caption_assets`
+- `kaltura_thumb_assets`
+- `kaltura_attachment_assets`
 - `db_sync_state`
 
 The relevant timestamp-related columns are:
@@ -89,7 +105,11 @@ CREATE TABLE IF NOT EXISTS kaltura_entries (
 
 If you are upgrading an existing database, confirm those columns exist before relying on the stale-entry checks. The app will create the table on first run when the table does not exist, but it does not automatically add missing columns to an already-created table.
 
-During import, every XML leaf tag is also mapped to a safe MySQL column name. Known Kaltura tags use the existing typed columns; previously unknown tags are added as nullable `TEXT` columns automatically. The `<id>` tag is mapped to `EntryId` and is not duplicated as an `ID` column. Existing databases are migrated by removing the obsolete `ID` column when the schema is checked.
+During import, every XML leaf tag is also mapped to a safe MySQL column name. Known Kaltura tags use the existing typed columns; previously unknown tags are added as nullable `LONGTEXT` columns automatically. The `<id>` tag is mapped to `EntryId` and is not duplicated as an `ID` column. Existing databases are migrated by removing the obsolete `ID` column when the schema is checked.
+
+The first caption request, `caption_captionAsset.list`, is stored in `kaltura_caption_assets`. Its XML tags become columns, with `CaptionAssetId` as the primary key. The later `caption_captionAsset.serveAsJson` response is written to the per-caption JSON file only and is not stored in MySQL.
+
+The `thumbAsset.list` and `attachmentAsset.list` responses are stored separately in `kaltura_thumb_assets` and `kaltura_attachment_assets`. Their IDs are the primary keys, and both tables include `CreatedAt`, `UpdatedAt`, `CreatedAtHR`, and `UpdatedAtHR` with UTC conversions. URL/download responses are not stored in these tables.
 
 ## MySQL configuration
 
@@ -102,6 +122,16 @@ database = backup_10206
 user = backupuser10206
 password = <dbuserpassword>
 ```
+## XML Response Directory
+
+The application saves each raw XML response from the Kaltura API to the configured directory. Configure it under the `[Paths]` section:
+
+```ini
+[Paths]
+XmlDir = xml
+```
+
+Files use the API service and action plus a UTC timestamp, for example `baseEntry_list_20260918_151850_123456.xml`.
 
 The code also supports `root_user` and `root_password` for bootstrap scenarios, but the normal runtime connection uses the non-root `user` and `password` values.
 
@@ -161,7 +191,7 @@ backup_destination/
 ??? entry_1_id/
 ?   ??? media.mp4
 ?   ??? metadata.csv
-?   ??? captions.vtt
+?   ??? caption_caption-asset-1.json
 ?   ??? thumbnail.jpg
 ?   ??? attachment.txt
 ?   ??? api_response.json
@@ -182,7 +212,7 @@ For each Kaltura entry, the following artifacts are downloaded **if present** an
 |----------|----------|-----------|-------------|
 | **Media** | `media.mp4`, `audio.mp3`, `image.jpg`, or `media.bin` | `Export.SaveMedia` | The main media file. Format depends on media type: video ? `.mp4`, audio ? `.mp3`, image ? `.jpg`, other ? `.bin` |
 | **Custom Metadata** | `metadata.csv` | `Export.SaveMetadata` | Custom metadata in CSV format with header row containing `entry_id`, `name`, and configured metadata field names (from `[metadata_profiles]` section). Only includes profiles specified in the configuration. |
-| **Captions** | `captions.vtt` | `Export.SaveCaptions` | WebVTT caption file combining all available captions for the entry. Empty file if no captions are present. |
+| **Captions** | `caption_<caption_asset_id>.json` | `Export.SaveCaptions` | JSON caption response for each caption asset, retrieved through `captionAsset.serveAsJson`. |
 | **Thumbnails** | `thumbnail.jpg` | `Export.SaveThumbnails` | Entry thumbnail image. Includes all available thumbnail assets for the entry. |
 | **Attachments** | `attachment.txt` | `Export.SaveAttachments` | Text file listing attachment URLs. One URL per line. Empty file if no attachments are present. |
 | **API Response** | `api_response.json` | `Export.SaveApiResponses` or `Export.SaveMetadata` | JSON response containing basic entry metadata (`entry_id` and `name`). Written whenever metadata or API responses are saved. |
@@ -193,6 +223,8 @@ When running with `ResumeDownloads = true` in the configuration:
 - Media files are **skipped** if they already exist in the backup folder
 - Metadata, captions, attachments, images, and thumbnails are **always downloaded** and overwritten
 - This allows you to refresh supplementary data without re-downloading large media files
+
+Independently of `ResumeDownloads`, media, captions, thumbnails, attachments, and saved API responses are skipped when an entry's positive `UpdatedAt` UNIX timestamp is more than 48 hours old and the corresponding artifact already exists. The timestamp comparison uses UTC. `metadata.csv` is the only downloadable artifact that is always refreshed.
 
 ## Project roadmap status
 

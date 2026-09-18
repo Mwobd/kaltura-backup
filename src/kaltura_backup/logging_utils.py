@@ -158,6 +158,13 @@ class BackupLogger:
 
         return self._logger
 
+    def set_level(self, level: int) -> None:
+        """Update the logger and all configured handlers at runtime."""
+        with self._lock:
+            self._logger.setLevel(level)
+            for handler in self._logger.handlers:
+                handler.setLevel(level)
+
     # ------------------------------------------------------------------
 
     def _configure(self) -> None:

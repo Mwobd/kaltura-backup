@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from datetime import UTC, datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -253,6 +254,69 @@ def test_backup_manager_supports_dict_like_entry_payloads(tmp_path: Path) -> Non
 
     processed = manager.run(entries)
     assert processed[0].status is BackupStatus.COMPLETED
+
+
+def test_backup_manager_uses_database_entry_ids(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    state_manager = StateManager(configuration)
+    logger = initialize_logger(configuration)
+
+    class DatabaseClientManager(DummyClientManager):
+        def list_all_entries(self):
+            raise AssertionError("API-wide discovery must not run for database-backed backups")
+
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=state_manager,
+        client_manager=DatabaseClientManager(),
+        logger=logger,
+        database_entry_ids=["entry-type-one"],
+    )
+
+    entries = manager.discover_entries()
+
+    assert [entry.entry_id for entry in entries] == ["entry-type-one"]
+
+
+def test_old_entry_with_existing_artifacts_is_safe_to_skip(tmp_path: Path) -> None:
+    entry = BackupEntry(
+        entry_id="entry-old",
+        name="old",
+        updated_at=int((datetime.now(UTC) - timedelta(hours=49)).timestamp()),
+        created_at=1,
+    )
+    backup_dir = tmp_path / "entry-old"
+    backup_dir.mkdir()
+    (backup_dir / "media.mp4").write_bytes(b"existing")
+    (backup_dir / "caption_caption-1.json").write_text("{}", encoding="utf-8")
+
+    assert BackupManager._entry_artifact_is_stale_safe(entry) is True
+    manager = object.__new__(BackupManager)
+    assert manager._media_file_exists(backup_dir, entry) is True
+    assert manager._caption_file_exists(backup_dir) is True
+
+
+def test_recent_entry_is_not_safe_to_skip(tmp_path: Path) -> None:
+    entry = BackupEntry(
+        entry_id="entry-recent",
+        name="recent",
+        updated_at=int((datetime.now(UTC) - timedelta(hours=47)).timestamp()),
+        created_at=1,
+    )
+
+    assert BackupManager._entry_artifact_is_stale_safe(entry) is False
+
+
+def test_old_entry_detects_all_existing_non_metadata_artifacts(tmp_path: Path) -> None:
+    backup_dir = tmp_path / "entry-old"
+    backup_dir.mkdir()
+    (backup_dir / "api_response.json").write_text("{}", encoding="utf-8")
+    (backup_dir / "thumbnail.jpg").write_bytes(b"image")
+    (backup_dir / "attachment.pdf").write_bytes(b"attachment")
+
+    assert (backup_dir / "api_response.json").exists()
+    assert BackupManager._caption_file_exists(backup_dir) is False
+    assert BackupManager._attachment_file_exists(backup_dir) is True
 
 
 def test_backup_manager_disconnects_client_on_failure(tmp_path: Path) -> None:

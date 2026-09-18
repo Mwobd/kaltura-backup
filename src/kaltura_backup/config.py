@@ -41,6 +41,7 @@ CsvDir = csv
 LogDir = logs
 ReportDir = reports
 StateFile = backup_state.json
+XmlDir = xml
 
 [Download]
 Workers = 1
@@ -69,7 +70,7 @@ password =
 [metadata_profiles]
 
 [Logging]
-Level = INFO
+Level = DEBUG
 KeepLogs = 7
 """
 
@@ -103,6 +104,7 @@ class PathConfig:
     log_dir: Path
     report_dir: Path
     state_file: Path
+    xml_dir: Path = Path("xml")
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,6 +392,9 @@ class ConfigLoader:
             state_file=Path(
                 self._require("Paths", "StateFile")
             ).resolve(),
+            xml_dir=Path(
+                self._parser.get("Paths", "XmlDir", fallback="xml")
+            ).resolve(),
         )
 
     # ---------------------------------------------------------------------
@@ -565,6 +570,7 @@ class ConfigLoader:
             configuration.paths.csv_dir,
             configuration.paths.log_dir,
             configuration.paths.report_dir,
+            configuration.paths.xml_dir,
         )
 
         for directory in directories:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 from typing import Any, Callable
 import sys
@@ -11,6 +12,7 @@ from .config import load_configuration
 from .database import DatabaseManager
 from .exceptions import BackupError, ConfigurationError
 from .logging_utils import initialize_logger
+from .logging_utils import EventId
 from .state import StateManager
 
 
@@ -67,6 +69,8 @@ def main(
     try:
         configuration = load_configuration(Path(args.config))
         logger = initialize_logger(configuration)
+        if args.database_sync:
+            logger.set_level(logging.DEBUG)
         print(f"Starting Kaltura backup using configuration: {args.config}")
         state_manager = StateManager(configuration)
         state_manager.load()
@@ -96,18 +100,40 @@ def main(
                 print("Database sync requested but no [mysql] section is configured.", file=sys.stderr)
                 return 2
             try:
-                DatabaseManager(configuration).sync_if_due(client_manager, force=args.force_database_sync)
-                print("Database sync completed.")
+                logger.info(EventId.APPLICATION_START, "Database-only sync requested.")
+                database_manager = DatabaseManager(configuration, logger)
+                if hasattr(client_manager, "set_xml_response_handler"):
+                    client_manager.set_xml_response_handler(database_manager.store_xml_response)
+                logger.info(EventId.CONNECTING, "Connecting Kaltura client for database sync.")
+                client_manager.connect()
+                synced = database_manager.sync_if_due(client_manager, force=args.force_database_sync)
+                message = "Database sync completed." if synced else "Database sync skipped; it was already completed today or returned no entries."
+                logger.info(EventId.APPLICATION_STOP, message)
+                print(message)
                 return 0
             except Exception as exc:  # pragma: no cover - surfaced in CLI output
+                logger.exception(EventId.ERROR, "Database-only sync failed", exc)
                 print(f"Database sync error: {exc}", file=sys.stderr)
                 return 1
+            finally:
+                client_manager.disconnect()
 
+        database_entry_ids: list[str] | None = None
         if configuration.database is not None:
             try:
-                DatabaseManager(configuration).sync_if_due(client_manager, force=args.force_database_sync)
+                logger.info(EventId.APPLICATION_START, "Running daily database sync before backup workflow.")
+                logger.info(EventId.CONNECTING, "Connecting Kaltura client for database sync.")
+                client_manager.connect()
+                database_manager = DatabaseManager(configuration, logger)
+                if hasattr(client_manager, "set_xml_response_handler"):
+                    client_manager.set_xml_response_handler(database_manager.store_xml_response)
+                database_manager.sync_if_due(client_manager, force=args.force_database_sync)
+                database_entry_ids = database_manager.get_backup_entry_ids()
             except Exception as exc:
+                logger.exception(EventId.ERROR, "Database sync before backup failed", exc)
                 print(f"Database sync skipped because of an error: {exc}", file=sys.stderr)
+                database_entry_ids = []
+                client_manager.disconnect()
 
         manager = BackupManager(
             configuration=configuration,
@@ -115,6 +141,7 @@ def main(
             client_manager=client_manager,
             logger=logger,
             dry_run=args.dry_run,
+            database_entry_ids=database_entry_ids,
         )
 
         if args.retry_failed:

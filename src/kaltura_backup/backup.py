@@ -12,6 +12,7 @@ import json
 import signal
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait
+from datetime import UTC, datetime, timedelta
 from html import unescape
 from xml.etree import ElementTree
 from urllib.parse import urlparse, unquote, unquote_plus
@@ -133,12 +134,14 @@ class BackupManager:
         client_manager: Any,
         logger: BackupLogger,
         dry_run: bool = False,
+        database_entry_ids: list[str] | None = None,
     ) -> None:
         self._configuration = configuration
         self._state_manager = state_manager
         self._client_manager = client_manager
         self._logger = logger
         self._dry_run = dry_run
+        self._database_entry_ids = database_entry_ids
         self._stop_requested = False
         self._stop_event = threading.Event()
 
@@ -323,29 +326,32 @@ class BackupManager:
 
         # Download media
         media_skipped = False
-        try:
-            media_url = self._client_manager.get_entry_media_url(entry.entry_id)
-            if media_url:
-                file_path = self._media_file_path(backup_dir, entry)
-                try:
-                    with requests.get(media_url, stream=True, timeout=30) as resp:
-                        resp.raise_for_status()
-                        filename = _resolve_download_filename(resp, file_path.name, media_url)
-                        file_path = self._media_file_path(backup_dir, entry, filename)
-                        with file_path.open("wb") as fh:
-                            for chunk in resp.iter_content(chunk_size=8192):
-                                if chunk:
-                                    fh.write(chunk)
-                                    self._state_manager.increment_statistic("bytes_downloaded", len(chunk))
-                    entry.downloads.mark_completed(ArtifactType.MEDIA)
-                except requests.RequestException as exc:
-                    raise RetryableError(f"Failed to download media for {entry.entry_id}: {exc}") from exc
-            else:
-                # Fallback to placeholder if no URL available
+        if self._entry_artifact_is_stale_safe(entry) and self._media_file_exists(backup_dir, entry):
+            media_skipped = True
+            entry.downloads.mark_completed(ArtifactType.MEDIA)
+            self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping unchanged media for old entry {entry.entry_id}")
+        else:
+            try:
+                media_url = self._client_manager.get_entry_media_url(entry.entry_id)
+                if media_url:
+                    file_path = self._media_file_path(backup_dir, entry)
+                    try:
+                        with requests.get(media_url, stream=True, timeout=30) as resp:
+                            resp.raise_for_status()
+                            filename = _resolve_download_filename(resp, file_path.name, media_url)
+                            file_path = self._media_file_path(backup_dir, entry, filename)
+                            with file_path.open("wb") as fh:
+                                for chunk in resp.iter_content(chunk_size=8192):
+                                    if chunk:
+                                        fh.write(chunk)
+                                        self._state_manager.increment_statistic("bytes_downloaded", len(chunk))
+                        entry.downloads.mark_completed(ArtifactType.MEDIA)
+                    except requests.RequestException as exc:
+                        raise RetryableError(f"Failed to download media for {entry.entry_id}: {exc}") from exc
+                else:
+                    media_skipped = self._write_media_if_needed(backup_dir, entry)
+            except Exception:
                 media_skipped = self._write_media_if_needed(backup_dir, entry)
-        except Exception:
-            # If the client method fails, fall back to placeholder to avoid blocking
-            media_skipped = self._write_media_if_needed(backup_dir, entry)
 
         if self._configuration.export.save_metadata and not self._is_image_entry(entry):
             profile_fields = self._configuration.metadata.profile_fields
@@ -405,7 +411,12 @@ class BackupManager:
             entry.downloads.mark_completed(ArtifactType.METADATA)
             self._state_manager.increment_statistic("metadata_written")
 
-        if self._configuration.export.save_api_responses or self._configuration.export.save_metadata:
+        if (
+            self._configuration.export.save_api_responses or self._configuration.export.save_metadata
+        ) and not (
+            self._entry_artifact_is_stale_safe(entry)
+            and (backup_dir / "api_response.json").exists()
+        ):
             (backup_dir / "api_response.json").write_text(
                 json.dumps({"entry_id": entry.entry_id}, indent=2),
                 encoding="utf-8",
@@ -414,15 +425,16 @@ class BackupManager:
             self._state_manager.increment_statistic("api_responses_saved")
 
         if self._configuration.export.save_captions:
-            captions_path = backup_dir / "captions.vtt"
-            wrote_any = False
-            try:
-                assets = self._client_manager.list_caption_assets(entry.entry_id)
-            except Exception:
-                assets = []
+            if self._entry_artifact_is_stale_safe(entry) and self._caption_file_exists(backup_dir):
+                entry.downloads.mark_completed(ArtifactType.CAPTIONS)
+                self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping unchanged captions for old entry {entry.entry_id}")
+            else:
+                try:
+                    assets = self._client_manager.list_caption_assets(entry.entry_id)
+                except Exception:
+                    assets = []
 
-            with captions_path.open("w", encoding="utf-8") as fh:
-                fh.write("WEBVTT\n")
+                wrote_any = False
                 for asset in assets:
                     asset_id = _read_value(asset, "id")
 
@@ -430,86 +442,102 @@ class BackupManager:
                         continue
 
                     try:
-                        vtt = self._client_manager.get_caption_webvtt(asset_id)
-                        text = vtt
-                        if isinstance(vtt, str) and vtt.startswith("http"):
-                            response = requests.get(vtt, timeout=30)
+                        json_response = self._client_manager.get_caption_json(asset_id)
+                        if isinstance(json_response, str) and json_response.startswith("http"):
+                            response = requests.get(json_response, timeout=30)
                             response.raise_for_status()
-                            text = response.text
-                        if text:
-                            fh.write(text)
-                            fh.write("\n")
-                            wrote_any = True
+                            json_response = response.text
+                        if isinstance(json_response, (str, bytes, bytearray)):
+                            payload = json.loads(json_response)
+                        else:
+                            payload = json_response
+                        safe_asset_id = "".join(
+                            character if character.isalnum() or character in {"-", "_", "."} else "_"
+                            for character in str(asset_id)
+                        )
+                        caption_path = backup_dir / f"caption_{safe_asset_id}.json"
+                        caption_path.write_text(
+                            json.dumps(payload, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                        wrote_any = True
                     except Exception:
                         continue
 
-            if wrote_any:
-                entry.downloads.mark_completed(ArtifactType.CAPTIONS)
-                self._state_manager.increment_statistic("captions_downloaded")
+                if wrote_any:
+                    entry.downloads.mark_completed(ArtifactType.CAPTIONS)
+                    self._state_manager.increment_statistic("captions_downloaded")
 
         if self._configuration.export.save_thumbnails:
-            try:
-                thumbs = self._client_manager.list_thumb_assets(entry.entry_id)
-            except Exception:
-                thumbs = []
-
-            thumb_written = False
-            for thumb in thumbs:
-                thumb_id = _read_value(thumb, "id")
-
-                if not thumb_id:
-                    continue
-
-                try:
-                    url = self._client_manager.get_thumb_url(thumb_id)
-                except Exception:
-                    continue
-
-                try:
-                    resp = requests.get(url, timeout=30)
-                    resp.raise_for_status()
-                    # use first thumbnail only
-                    (backup_dir / "thumbnail.jpg").write_bytes(resp.content)
-                    thumb_written = True
-                    break
-                except Exception:
-                    continue
-
-            if thumb_written:
+            if self._entry_artifact_is_stale_safe(entry) and (backup_dir / "thumbnail.jpg").exists():
                 entry.downloads.mark_completed(ArtifactType.THUMBNAILS)
-                self._state_manager.increment_statistic("thumbnails_downloaded")
+                self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping unchanged thumbnail for old entry {entry.entry_id}")
+            else:
+                try:
+                    thumbs = self._client_manager.list_thumb_assets(entry.entry_id)
+                except Exception:
+                    thumbs = []
+
+                thumb_written = False
+                for thumb in thumbs:
+                    thumb_id = _read_value(thumb, "id")
+
+                    if not thumb_id:
+                        continue
+
+                    try:
+                        url = self._client_manager.get_thumb_url(thumb_id)
+                    except Exception:
+                        continue
+
+                    try:
+                        resp = requests.get(url, timeout=30)
+                        resp.raise_for_status()
+                        (backup_dir / "thumbnail.jpg").write_bytes(resp.content)
+                        thumb_written = True
+                        break
+                    except Exception:
+                        continue
+
+                if thumb_written:
+                    entry.downloads.mark_completed(ArtifactType.THUMBNAILS)
+                    self._state_manager.increment_statistic("thumbnails_downloaded")
 
         if self._configuration.export.save_attachments:
-            try:
-                atts = self._client_manager.list_attachment_assets(entry.entry_id)
-            except Exception:
-                atts = []
-
-            att_written = False
-            for att in atts:
-                att_id = _read_value(att, "id")
-
-                if not att_id:
-                    continue
-
-                try:
-                    url = self._client_manager.get_attachment_url(att_id)
-                except Exception:
-                    continue
-
-                try:
-                    resp = requests.get(url, timeout=30)
-                    resp.raise_for_status()
-                    parsed = urlparse(url)
-                    name = unquote(parsed.path.split("/")[-1]) or f"attachment_{att_id}"
-                    (backup_dir / name).write_bytes(resp.content)
-                    att_written = True
-                except Exception:
-                    continue
-
-            if att_written:
+            if self._entry_artifact_is_stale_safe(entry) and self._attachment_file_exists(backup_dir):
                 entry.downloads.mark_completed(ArtifactType.ATTACHMENTS)
-                self._state_manager.increment_statistic("attachments_downloaded")
+                self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping unchanged attachments for old entry {entry.entry_id}")
+            else:
+                try:
+                    atts = self._client_manager.list_attachment_assets(entry.entry_id)
+                except Exception:
+                    atts = []
+
+                att_written = False
+                for att in atts:
+                    att_id = _read_value(att, "id")
+
+                    if not att_id:
+                        continue
+
+                    try:
+                        url = self._client_manager.get_attachment_url(att_id)
+                    except Exception:
+                        continue
+
+                    try:
+                        resp = requests.get(url, timeout=30)
+                        resp.raise_for_status()
+                        parsed = urlparse(url)
+                        name = unquote(parsed.path.split("/")[-1]) or f"attachment_{att_id}"
+                        (backup_dir / name).write_bytes(resp.content)
+                        att_written = True
+                    except Exception:
+                        continue
+
+                if att_written:
+                    entry.downloads.mark_completed(ArtifactType.ATTACHMENTS)
+                    self._state_manager.increment_statistic("attachments_downloaded")
 
         if media_skipped:
             self._logger.info(
@@ -549,6 +577,40 @@ class BackupManager:
                 return candidate
 
         return backup_dir / filename
+
+    def _media_file_exists(self, backup_dir: Any, entry: BackupEntry) -> bool:
+        return self._media_file_path(backup_dir, entry).exists()
+
+    @staticmethod
+    def _caption_file_exists(backup_dir: Any) -> bool:
+        return (backup_dir / "captions.vtt").exists() or any(backup_dir.glob("caption_*.json"))
+
+    @staticmethod
+    def _attachment_file_exists(backup_dir: Any) -> bool:
+        known_files = {
+            "manifest.json",
+            "metadata.csv",
+            "api_response.json",
+            "thumbnail.jpg",
+            "media.mp4",
+            "audio.mp3",
+            "image.jpg",
+            "media.bin",
+            "captions.vtt",
+        }
+        return any(
+            path.is_file()
+            and path.name not in known_files
+            and not path.name.startswith("caption_")
+            for path in backup_dir.iterdir()
+        )
+
+    @staticmethod
+    def _entry_artifact_is_stale_safe(entry: BackupEntry) -> bool:
+        if entry.updated_at <= 0:
+            return False
+        updated_at = datetime.fromtimestamp(entry.updated_at, tz=UTC)
+        return updated_at < datetime.now(UTC) - timedelta(hours=48)
 
     def _write_media_if_needed(self, backup_dir: Any, entry: BackupEntry) -> bool:
         file_path = self._media_file_path(backup_dir, entry)
@@ -678,7 +740,17 @@ class BackupManager:
     def discover_entries(self) -> list[BackupEntry]:
         """Discover entries from the client manager and return them as backup entries."""
 
-        result = self._client_manager.list_all_entries()
+        if self._database_entry_ids is not None:
+            result = [
+                self._client_manager.get_entry(entry_id)
+                for entry_id in self._database_entry_ids
+            ]
+            self._logger.info(
+                EventId.ENTRY_DISCOVERED,
+                f"Loaded {len(result)} Type=1 entries selected by the database.",
+            )
+        else:
+            result = self._client_manager.list_all_entries()
         return [
             BackupEntry(
                 entry_id=str(_read_value(item, "id", "")),
