@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import signal
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -122,6 +123,56 @@ def _resolve_download_filename(response: Any, fallback_name: str, request_url: s
         return candidate
 
     return fallback_name
+
+
+def _safe_download_filename(filename: str, entry_id: str) -> str:
+    """Sanitize a response filename, falling back to the entry ID if unusable."""
+    invalid_characters = set('<>:"/\\|?*')
+    basename = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    stem, separator, suffix = basename.rpartition(".")
+    extension = f".{suffix}" if separator and stem and re.fullmatch(r"[A-Za-z0-9]{1,16}", suffix) else ""
+    stem = stem if extension else basename
+    reserved_names = {"CON", "PRN", "AUX", "NUL"} | {
+        f"{prefix}{number}"
+        for prefix in ("COM", "LPT")
+        for number in range(1, 10)
+    }
+
+    sanitized_stem = "".join(
+        "_" if character in invalid_characters or ord(character) < 32 else character
+        for character in stem
+    ).rstrip(". ")
+    reserved_stem = sanitized_stem.split(".", 1)[0].upper()
+    sanitized_name = f"{sanitized_stem}{extension}"
+    if sanitized_name and reserved_stem not in reserved_names:
+        return sanitized_name
+
+    safe_entry_id = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", entry_id).rstrip(". ")
+    return f"{safe_entry_id or 'entry'}{extension}"
+
+
+def _normalize_media_type(value: Any) -> str:
+    getter = getattr(value, "getValue", None)
+    if callable(getter):
+        value = getter()
+    elif hasattr(value, "value") and not isinstance(value, (str, bytes, bytearray)):
+        value = value.value
+
+    normalized = str(value or "").strip().lower()
+    return {
+        "1": "video",
+        "2": "image",
+        "5": "audio",
+    }.get(normalized, normalized)
+
+
+def _is_error_media_payload(prefix: bytes, content_type: str) -> bool:
+    content_type = content_type.lower().split(";", 1)[0].strip()
+    if content_type in {"application/xml", "text/xml", "text/html", "application/json"}:
+        return True
+
+    beginning = prefix.lstrip().lower()
+    return beginning.startswith((b"<", b"{", b"["))
 
 
 class BackupManager:
@@ -279,8 +330,8 @@ class BackupManager:
         entry.name = str(_read_value(result, "name", entry.name))
         entry.reference_id = str(_read_value(result, "referenceId", entry.reference_id))
         entry.owner_id = str(_read_value(result, "userId", entry.owner_id))
-        entry.media_type = str(
-            _read_value(result, "mediaType", _read_value(result, "type", entry.media_type) or "")
+        entry.media_type = _normalize_media_type(
+            _read_value(result, "mediaType", entry.media_type)
         )
         try:
             entry.duration_seconds = int(_read_value(result, "duration", entry.duration_seconds) or 0)
@@ -331,27 +382,32 @@ class BackupManager:
             entry.downloads.mark_completed(ArtifactType.MEDIA)
             self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping unchanged media for old entry {entry.entry_id}")
         else:
-            try:
-                media_url = self._client_manager.get_entry_media_url(entry.entry_id)
-                if media_url:
-                    file_path = self._media_file_path(backup_dir, entry)
-                    try:
-                        with requests.get(media_url, stream=True, timeout=30) as resp:
-                            resp.raise_for_status()
-                            filename = _resolve_download_filename(resp, file_path.name, media_url)
-                            file_path = self._media_file_path(backup_dir, entry, filename)
-                            with file_path.open("wb") as fh:
-                                for chunk in resp.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        fh.write(chunk)
-                                        self._state_manager.increment_statistic("bytes_downloaded", len(chunk))
-                        entry.downloads.mark_completed(ArtifactType.MEDIA)
-                    except requests.RequestException as exc:
-                        raise RetryableError(f"Failed to download media for {entry.entry_id}: {exc}") from exc
+            if self._is_image_entry(entry):
+                media_url = self._source_image_url(entry_data)
+                if not media_url:
+                    media_skipped = True
+                    self._logger.warning(
+                        EventId.WARNING,
+                        f"Image entry {entry.entry_id} has no direct Kaltura downloadUrl; skipping source download.",
+                    )
+            else:
+                media_url_method = getattr(self._client_manager, "get_entry_media_url", None)
+                if not callable(media_url_method):
+                    media_skipped = True
+                    self._logger.warning(EventId.WARNING, f"Client manager cannot provide a media URL for {entry.entry_id}")
                 else:
-                    media_skipped = self._write_media_if_needed(backup_dir, entry)
-            except Exception:
-                media_skipped = self._write_media_if_needed(backup_dir, entry)
+                    try:
+                        media_url_value = media_url_method(entry.entry_id)
+                    except Exception as exc:
+                        raise RetryableError(f"Failed to create media URL for {entry.entry_id}: {exc}") from exc
+
+                    if not media_url_value:
+                        raise RetryableError(f"Kaltura returned no media URL for {entry.entry_id}")
+                    media_url = str(media_url_value)
+
+            if not media_skipped:
+                self._download_media_from_url(entry, backup_dir, media_url)
+                entry.downloads.mark_completed(ArtifactType.MEDIA)
 
         if self._configuration.export.save_metadata and not self._is_image_entry(entry):
             profile_fields = self._configuration.metadata.profile_fields
@@ -379,7 +435,11 @@ class BackupManager:
                 for profile_id, fields in profile_fields.items():
                     try:
                         meta_objs = self._client_manager.list_metadata_objects(entry.entry_id, profile_id)
-                    except Exception:
+                    except Exception as exc:
+                        self._logger.warning(
+                            EventId.WARNING,
+                            f"Could not list metadata for entry {entry.entry_id}, profile {profile_id}: {exc}",
+                        )
                         meta_objs = []
 
                     for meta in meta_objs:
@@ -389,14 +449,24 @@ class BackupManager:
                         if not meta_id:
                             continue
 
-                        try:
-                            xml = self._client_manager.get_metadata_xml(meta_id)
-                        except Exception:
-                            continue
+                        xml = _read_value(meta, "xml")
+                        if not xml:
+                            try:
+                                xml = self._client_manager.get_metadata_xml(meta_id)
+                            except Exception as exc:
+                                self._logger.warning(
+                                    EventId.WARNING,
+                                    f"Could not fetch metadata XML {meta_id} for entry {entry.entry_id}: {exc}",
+                                )
+                                continue
 
                         try:
                             root = ElementTree.fromstring(xml)
-                        except Exception:
+                        except Exception as exc:
+                            self._logger.warning(
+                                EventId.WARNING,
+                                f"Could not parse metadata XML {meta_id} for entry {entry.entry_id}: {exc}",
+                            )
                             continue
 
                         for field_name in fields:
@@ -542,7 +612,7 @@ class BackupManager:
         if media_skipped:
             self._logger.info(
                 EventId.DOWNLOAD_COMPLETED,
-                f"Existing source media found for {entry.entry_id}, skipping media download.",
+                f"Source media download skipped for {entry.entry_id}.",
             )
 
         self._state_manager.increment_statistic("api_calls")
@@ -579,7 +649,67 @@ class BackupManager:
         return backup_dir / filename
 
     def _media_file_exists(self, backup_dir: Any, entry: BackupEntry) -> bool:
-        return self._media_file_path(backup_dir, entry).exists()
+        media_path = self._media_file_path(backup_dir, entry)
+        try:
+            if not media_path.is_file() or media_path.stat().st_size <= 1024:
+                return False
+            with media_path.open("rb") as media_file:
+                prefix = media_file.read(512)
+            return not _is_error_media_payload(prefix, "")
+        except OSError:
+            return False
+
+    def _source_image_url(self, entry_data: Any) -> str | None:
+        value = _read_value(entry_data, "downloadUrl")
+        if value is None or value is NotImplemented:
+            return None
+        url = str(value).strip()
+        if not url or url.lower() in {"notimplemented", "none"}:
+            return None
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None
+        return url
+
+    def _download_media_from_url(self, entry: BackupEntry, backup_dir: Any, media_url: str) -> None:
+        file_path = self._media_file_path(backup_dir, entry)
+        temporary_path = file_path.with_name(f".{file_path.name}.part")
+        try:
+            with requests.get(media_url, stream=True, timeout=30) as response:
+                response.raise_for_status()
+                filename = _resolve_download_filename(response, file_path.name, media_url)
+                filename = _safe_download_filename(filename, entry.entry_id)
+                file_path = self._media_file_path(backup_dir, entry, filename)
+                temporary_path = file_path.with_name(f".{file_path.name}.part")
+                prefix = bytearray()
+                byte_count = 0
+                with temporary_path.open("wb") as media_file:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if not chunk:
+                            continue
+                        if len(prefix) < 512:
+                            prefix.extend(chunk[: 512 - len(prefix)])
+                        media_file.write(chunk)
+                        byte_count += len(chunk)
+                        self._state_manager.increment_statistic("bytes_downloaded", len(chunk))
+
+                content_type = (response.headers.get("Content-Type") or "").lower()
+                if byte_count == 0 or _is_error_media_payload(bytes(prefix), content_type):
+                    raise RetryableError(
+                        f"Kaltura returned a non-media response for {entry.entry_id} "
+                        f"(content-type={content_type or 'unknown'}, bytes={byte_count})"
+                    )
+
+            temporary_path.replace(file_path)
+        except RetryableError:
+            temporary_path.unlink(missing_ok=True)
+            raise
+        except requests.RequestException as exc:
+            temporary_path.unlink(missing_ok=True)
+            raise RetryableError(f"Failed to download media for {entry.entry_id}: {exc}") from exc
+        except OSError as exc:
+            temporary_path.unlink(missing_ok=True)
+            raise RetryableError(f"Could not save media for {entry.entry_id}: {exc}") from exc
 
     @staticmethod
     def _caption_file_exists(backup_dir: Any) -> bool:
@@ -611,17 +741,6 @@ class BackupManager:
             return False
         updated_at = datetime.fromtimestamp(entry.updated_at, tz=UTC)
         return updated_at < datetime.now(UTC) - timedelta(hours=48)
-
-    def _write_media_if_needed(self, backup_dir: Any, entry: BackupEntry) -> bool:
-        file_path = self._media_file_path(backup_dir, entry)
-
-        if file_path.exists():
-            entry.downloads.mark_completed(ArtifactType.MEDIA)
-            return True
-
-        file_path.write_bytes(b"fake-media")
-        entry.downloads.mark_completed(ArtifactType.MEDIA)
-        return False
 
     def _register_signal_handlers(self) -> None:
         """Register signal handlers so interruption requests stop the backup gracefully."""

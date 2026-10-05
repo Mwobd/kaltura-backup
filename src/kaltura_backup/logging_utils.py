@@ -289,6 +289,22 @@ class BackupLogger:
                 self._build_message(event, message)
             )
 
+    def info_file_only(self, event: EventId, message: str) -> None:
+        """Write an INFO message to file handlers without displaying it on console."""
+        with self._lock:
+            record = self._logger.makeRecord(
+                self._logger.name,
+                logging.INFO,
+                "",
+                0,
+                self._build_message(event, message),
+                (),
+                None,
+            )
+            for handler in self._logger.handlers:
+                if isinstance(handler, logging.FileHandler) and record.levelno >= handler.level:
+                    handler.handle(record)
+
     # ------------------------------------------------------------------
 
     def warning(

@@ -24,6 +24,7 @@ import traceback
 import os
 import re
 from datetime import UTC, datetime
+import requests
 
 #from collections import deque
 from functools import wraps
@@ -60,9 +61,10 @@ try:
         KalturaCaptionAssetFilter = None  # type: ignore[name-defined]
 
     try:
-        from KalturaClient.Plugins.Metadata import KalturaMetadataFilter  # type: ignore[import-not-found]
+        from KalturaClient.Plugins.Metadata import KalturaMetadataFilter, KalturaMetadataObjectType  # type: ignore[import-not-found]
     except ImportError:
         KalturaMetadataFilter = None  # type: ignore[name-defined]
+        KalturaMetadataObjectType = None  # type: ignore[name-defined]
 
     try:
         from KalturaClient.Plugins.Attachment import KalturaAttachmentAssetFilter  # type: ignore[import-not-found]
@@ -277,6 +279,11 @@ class KalturaClientManager:
         self._condition = Condition()
 
         self._connected = False
+        self._log_ks_enabled = False
+
+    def set_log_ks_enabled(self, enabled: bool) -> None:
+        """Enable file-only KS logging for explicitly requested dry runs."""
+        self._log_ks_enabled = enabled
 
     def set_xml_response_handler(self, handler: Callable[[str, Any], None] | None) -> None:
         """Register an optional handler for raw API XML responses."""
@@ -377,6 +384,12 @@ class KalturaClientManager:
                 self._configuration.connection.expiry,
                 privileges_str,
             )
+
+            if self._log_ks_enabled:
+                self._logger.info_file_only(
+                    EventId.SESSION_CREATED,
+                    f"Kaltura KS for dry-run: {ks}",
+                )
 
             client.setKs(ks)
 
@@ -834,6 +847,11 @@ class KalturaClientManager:
         filter_object = self._make_filter(
             KalturaMetadataFilter,
             objectIdEqual=entry_id,
+            metadataObjectTypeEqual=(
+                KalturaMetadataObjectType.ENTRY
+                if KalturaMetadataObjectType is not None
+                else None
+            ),
             metadataProfileIdEqual=int(metadata_profile_id)
             if metadata_profile_id is not None
             else None,
@@ -882,9 +900,17 @@ class KalturaClientManager:
     ) -> str:
         with self.session() as session:
             try:
-                return self._metadata_service(session.client).serve(
+                response = self._metadata_service(session.client).serve(
                     metadata_id
                 )
+                if isinstance(response, str) and response.lower().startswith(("http://", "https://")):
+                    http_response = requests.get(
+                        response,
+                        timeout=self._configuration.download.timeout,
+                    )
+                    http_response.raise_for_status()
+                    return http_response.text
+                return response
             except Exception as exc:
                 self._translate_exception(exc)
 

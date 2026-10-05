@@ -174,6 +174,133 @@ def test_get_caption_json_uses_serve_as_json(tmp_path: Path) -> None:
     assert manager.get_caption_json("caption-1") == "https://example.invalid/caption.json"
 
 
+def test_get_metadata_xml_fetches_served_url(tmp_path: Path, monkeypatch) -> None:
+    from kaltura_backup import client as client_module
+
+    configuration = _make_configuration(tmp_path)
+
+    class MetadataService:
+        def serve(self, metadata_id):
+            assert metadata_id == "metadata-1"
+            return "https://example.invalid/metadata.xml"
+
+    class MetadataPlugin:
+        metadata = MetadataService()
+
+    class Client:
+        metadata = MetadataPlugin()
+
+    class Response:
+        text = "<metadata><Title>Example</Title></metadata>"
+
+        def raise_for_status(self):
+            return None
+
+    requests = []
+
+    def fake_get(url, timeout):
+        requests.append((url, timeout))
+        return Response()
+
+    monkeypatch.setattr(client_module.requests, "get", fake_get)
+    manager = KalturaClientManager(configuration, _NullLogger())
+    manager._pool = [KalturaSession(Client(), "ks")]
+    manager._connected = True
+
+    assert manager.get_metadata_xml("metadata-1") == Response.text
+    assert requests == [("https://example.invalid/metadata.xml", configuration.download.timeout)]
+
+
+def test_get_metadata_xml_accepts_direct_xml_response(tmp_path: Path, monkeypatch) -> None:
+    from kaltura_backup import client as client_module
+
+    configuration = _make_configuration(tmp_path)
+
+    class MetadataService:
+        def serve(self, _metadata_id):
+            return "<metadata><Title>Example</Title></metadata>"
+
+    class MetadataPlugin:
+        metadata = MetadataService()
+
+    class Client:
+        metadata = MetadataPlugin()
+
+    def unexpected_get(*args, **kwargs):
+        raise AssertionError("Direct XML should not trigger an HTTP fetch")
+
+    monkeypatch.setattr(client_module.requests, "get", unexpected_get)
+    manager = KalturaClientManager(configuration, _NullLogger())
+    manager._pool = [KalturaSession(Client(), "ks")]
+    manager._connected = True
+
+    assert manager.get_metadata_xml("metadata-1") == "<metadata><Title>Example</Title></metadata>"
+
+
+def test_list_metadata_objects_filters_entry_object_type(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    manager = KalturaClientManager(configuration, _NullLogger())
+
+    class MetadataService:
+        def list(self, filter_object, pager):
+            self.filter_object = filter_object
+            self.pager = pager
+            return []
+
+    service = MetadataService()
+    client = SimpleNamespace(metadata=SimpleNamespace(metadata=service))
+    manager._pool = [KalturaSession(client, "ks")]
+    manager._connected = True
+
+    assert manager.list_metadata_objects("entry-123", "4696") == []
+    assert service.filter_object.objectIdEqual == "entry-123"
+    assert service.filter_object.metadataProfileIdEqual == 4696
+    assert service.filter_object.metadataObjectTypeEqual == "1"
+
+
+def test_ks_is_logged_only_when_explicitly_enabled(tmp_path: Path, monkeypatch) -> None:
+    from kaltura_backup import client as client_module
+
+    configuration = _make_configuration(tmp_path)
+
+    class Logger(_NullLogger):
+        def __init__(self) -> None:
+            super().__init__()
+            self.file_messages = []
+
+        def info_file_only(self, event, message):
+            self.file_messages.append((event, message))
+
+    class FakeConfiguration:
+        def __init__(self, partner_id):
+            self.partner_id = partner_id
+
+        def setLogger(self, logger):
+            self.logger = logger
+
+    class FakeSdkClient:
+        def __init__(self, _configuration):
+            self.session = SimpleNamespace(start=lambda *args: "test-ks")
+            self.doHttpRequest = lambda *args, **kwargs: b"<result />"
+            self.parsePostResult = lambda payload: payload
+
+        def setKs(self, _ks):
+            return None
+
+    monkeypatch.setattr(client_module, "KalturaConfiguration", FakeConfiguration)
+    monkeypatch.setattr(client_module, "KalturaClient", FakeSdkClient)
+
+    logger = Logger()
+    manager = KalturaClientManager(configuration, logger)
+    manager.set_log_ks_enabled(True)
+
+    manager._create_session()
+
+    assert logger.file_messages == [
+        (client_module.EventId.SESSION_CREATED, "Kaltura KS for dry-run: test-ks")
+    ]
+
+
 def test_kaltura_sdk_logger_forwards_messages_to_debug_logger() -> None:
     logger = _NullLogger()
     adapter = _KalturaSdkLogger(logger)

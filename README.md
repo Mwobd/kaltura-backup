@@ -208,6 +208,8 @@ The root of the backup destination contains a `report.json` file with overall ba
 
 For each Kaltura entry, the following artifacts are downloaded **if present** and **if enabled** in the configuration:
 
+Image entries use the direct `downloadUrl` returned with the Kaltura entry instead of the video PlayManifest URL. If Kaltura does not provide a direct image source URL, the image source is skipped with a warning; thumbnail downloads remain a separate artifact.
+
 | Artifact | Filename | Enabled by | Description |
 |----------|----------|-----------|-------------|
 | **Media** | `media.mp4`, `audio.mp3`, `image.jpg`, or `media.bin` | `Export.SaveMedia` | The main media file. Format depends on media type: video ? `.mp4`, audio ? `.mp3`, image ? `.jpg`, other ? `.bin` |

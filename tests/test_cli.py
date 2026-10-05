@@ -27,6 +27,20 @@ def test_build_parser_accepts_dry_run_argument() -> None:
     assert args.dry_run is True
 
 
+def test_build_parser_accepts_log_ks_argument() -> None:
+    args = build_parser().parse_args(["--dry-run", "--log-ks"])
+
+    assert args.log_ks is True
+
+
+def test_log_ks_requires_dry_run(tmp_path: Path, capsys) -> None:
+    exit_code = main(["--config", str(tmp_path / "missing.ini"), "--log-ks"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "only be used together with --dry-run" in captured.err
+
+
 def test_build_parser_accepts_retry_failed_argument() -> None:
     parser = build_parser()
     args = parser.parse_args(["--retry-failed"])

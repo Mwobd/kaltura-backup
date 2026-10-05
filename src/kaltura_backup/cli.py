@@ -32,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show what would be processed without writing backup artifacts",
     )
     parser.add_argument(
+        "--log-ks",
+        action="store_true",
+        help="Write the Kaltura session KS to the log file (requires --dry-run)",
+    )
+    parser.add_argument(
         "--retry-failed",
         action="store_true",
         help="Retry only entries that were previously marked as failed in the saved state",
@@ -66,6 +71,10 @@ def main(
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.log_ks and not args.dry_run:
+        print("The --log-ks option can only be used together with --dry-run.", file=sys.stderr)
+        return 2
+
     try:
         configuration = load_configuration(Path(args.config))
         logger = initialize_logger(configuration)
@@ -94,6 +103,9 @@ def main(
                         "get_entry": lambda self, entry_id: {"id": entry_id, "name": entry_id},
                     },
                 )()
+
+        if args.log_ks and hasattr(client_manager, "set_log_ks_enabled"):
+            client_manager.set_log_ks_enabled(True)
 
         if args.database_sync:
             if configuration.database is None:
