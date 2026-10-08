@@ -56,6 +56,11 @@ try:
         KalturaThumbAssetFilter = None  # type: ignore[name-defined]
 
     try:
+        from KalturaClient.Plugins.ThumbCuePoint import KalturaThumbCuePointFilter  # type: ignore[import-not-found]
+    except ImportError:
+        KalturaThumbCuePointFilter = None  # type: ignore[name-defined]
+
+    try:
         from KalturaClient.Plugins.Caption import KalturaCaptionAssetFilter  # type: ignore[import-not-found]
     except ImportError:
         KalturaCaptionAssetFilter = None  # type: ignore[name-defined]
@@ -124,6 +129,7 @@ from .config import Configuration
 from .exceptions import (
     ApiError,
     AuthenticationError,
+    CaptionAssetNotReadyError,
     ClientError,
     NetworkError,
     RetryExceededError,
@@ -650,6 +656,19 @@ class KalturaClientManager:
             "Verify the installed Kaltura SDK and its dependencies."
         )
 
+    @staticmethod
+    def _cue_point_service(client: KalturaClient) -> Any:
+        namespace = getattr(client, "cuePoint", None)
+        service = getattr(namespace, "cuePoint", None)
+        if service is not None and callable(getattr(service, "list", None)):
+            return service
+        if namespace is not None and callable(getattr(namespace, "list", None)):
+            return namespace
+        raise ClientError(
+            "Configured Kaltura client does not expose a cuePoint service. "
+            "Verify that the CuePoint and ThumbCuePoint SDK plugins are installed."
+        )
+
     # ------------------------------------------------------------------
 
     def _caption_asset_service(self, client: KalturaClient) -> Any:
@@ -974,6 +993,33 @@ class KalturaClientManager:
             except Exception as exc:
                 self._translate_exception(exc)
 
+    @retryable
+    def list_timeline_slide_assets(self, entry_id: str, page_size: int = 500) -> list[Any]:
+        """List timeline thumb cue points that reference slide-image assets."""
+        filter_object = self._make_filter(
+            KalturaThumbCuePointFilter,
+            entryIdEqual=entry_id,
+        )
+        cue_points: list[Any] = []
+        pager = self._initialize_pager(page_size=page_size, page_index=1)
+        while True:
+            with self.session() as session:
+                try:
+                    response = self._cue_point_service(session.client).list(filter_object, pager)
+                except Exception as exc:
+                    self._translate_exception(exc)
+            batch = self._objects_from_response(response)
+            if not batch:
+                break
+            cue_points.extend(batch)
+            total_count = self._total_count_from_response(response)
+            if total_count is not None and len(cue_points) >= total_count:
+                break
+            if len(batch) < page_size:
+                break
+            self._increment_pager(pager)
+        return cue_points
+
     # ------------------------------------------------------------------
 
     @retryable
@@ -1019,16 +1065,20 @@ class KalturaClientManager:
     # ------------------------------------------------------------------
 
     @retryable
-    def get_caption_json(
+    def get_caption_url(
         self,
         caption_asset_id: str,
     ) -> str:
         with self.session() as session:
             try:
-                return self._caption_asset_service(session.client).serveAsJson(
+                return self._caption_asset_service(session.client).getUrl(
                     caption_asset_id,
                 )
             except Exception as exc:
+                if "CAPTION_ASSET_IS_NOT_READY" in str(exc):
+                    raise CaptionAssetNotReadyError(
+                        f"Caption asset {caption_asset_id} is not ready; skipping it."
+                    ) from exc
                 self._translate_exception(exc)
 
     # ------------------------------------------------------------------

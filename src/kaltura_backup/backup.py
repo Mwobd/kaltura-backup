@@ -15,6 +15,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime, timedelta
 from html import unescape
+from pathlib import Path
 from xml.etree import ElementTree
 from urllib.parse import urlparse, unquote, unquote_plus
 from typing import Any
@@ -22,10 +23,19 @@ from typing import Any
 import requests
 
 from .config import Configuration
-from .exceptions import BackupCancelled, PermanentError, RetryableError
+from .exceptions import BackupCancelled, CaptionAssetNotReadyError, PermanentError, RetryableError
 from .logging_utils import BackupLogger, EventId
 from .models import ArtifactType, BackupEntry, BackupStatus
 from .state import StateManager
+
+
+SUMMARY_ARTIFACTS = (
+    "Media files",
+    "Metadata",
+    "Captions",
+    "Thumbnails",
+    "Attachments",
+)
 
 
 def _to_snake_case(value: str) -> str:
@@ -186,6 +196,7 @@ class BackupManager:
         logger: BackupLogger,
         dry_run: bool = False,
         database_entry_ids: list[str] | None = None,
+        database_entry_updated_at: dict[str, int | None] | None = None,
     ) -> None:
         self._configuration = configuration
         self._state_manager = state_manager
@@ -193,14 +204,23 @@ class BackupManager:
         self._logger = logger
         self._dry_run = dry_run
         self._database_entry_ids = database_entry_ids
+        self._database_entry_updated_at = database_entry_updated_at
         self._stop_requested = False
         self._stop_event = threading.Event()
+        self._statistics_lock = threading.Lock()
+        self._run_bytes_downloaded = 0
+        self._run_started_at: datetime | None = None
+        self._run_artifact_outcomes: dict[tuple[str, str], str | None] = {}
 
     def run(self, entries: list[BackupEntry] | None = None) -> list[BackupEntry]:
         """Process a batch of entries and persist the resulting state."""
 
         self._stop_requested = False
         self._stop_event.clear()
+        self._run_started_at = datetime.now(UTC)
+        with self._statistics_lock:
+            self._run_bytes_downloaded = 0
+            self._run_artifact_outcomes = {}
         self._register_signal_handlers()
 
         self._logger.info(EventId.APPLICATION_START, "Starting backup run")
@@ -221,6 +241,7 @@ class BackupManager:
 
                         if self._should_resume_skip(entry):
                             self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping completed entry {entry.entry_id}")
+                            self._record_entry_artifacts_skipped(entry)
                             existing = self._state_manager.get(entry.entry_id)
                             if existing is not None:
                                 processed.append(existing)
@@ -244,6 +265,7 @@ class BackupManager:
 
                     if self._should_resume_skip(entry):
                         self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping completed entry {entry.entry_id}")
+                        self._record_entry_artifacts_skipped(entry)
                         existing = self._state_manager.get(entry.entry_id)
                         if existing is not None:
                             processed.append(existing)
@@ -268,6 +290,26 @@ class BackupManager:
             return
 
         print(f"Progress: {completed}/{total} entries processed ({entry_id})", flush=True)
+
+    def _record_artifact(self, entry_id: str, artifact: str, outcome: str | None = None) -> None:
+        key = (entry_id, artifact)
+        with self._statistics_lock:
+            previous = self._run_artifact_outcomes.get(key)
+            if previous == "downloaded" and outcome == "skipped":
+                return
+            if key not in self._run_artifact_outcomes or outcome is not None:
+                self._run_artifact_outcomes[key] = outcome
+
+    def _record_entry_artifacts_skipped(self, entry: BackupEntry) -> None:
+        self._record_artifact(entry.entry_id, "Media files", "skipped")
+        if self._configuration.export.save_metadata and not self._is_image_entry(entry):
+            self._record_artifact(entry.entry_id, "Metadata", "skipped")
+        if self._configuration.export.save_captions:
+            self._record_artifact(entry.entry_id, "Captions", "skipped")
+        if self._configuration.export.save_thumbnails:
+            self._record_artifact(entry.entry_id, "Thumbnails", "skipped")
+        if self._configuration.export.save_attachments:
+            self._record_artifact(entry.entry_id, "Attachments", "skipped")
 
     def _process_entry(self, entry: BackupEntry) -> BackupEntry:
         """Process one entry and update the persistent state."""
@@ -357,6 +399,7 @@ class BackupManager:
 
         if self._dry_run:
             self._logger.info(EventId.APPLICATION_START, f"Dry run: would back up entry {entry.entry_id}")
+            self._record_entry_artifacts_skipped(entry)
             entry.downloads.mark_completed(ArtifactType.MEDIA)
             self._state_manager.increment_statistic("bytes_downloaded", 0)
             self._state_manager.increment_statistic("api_calls")
@@ -365,20 +408,13 @@ class BackupManager:
         backup_dir = self._configuration.paths.backup_dir / entry.entry_id
         backup_dir.mkdir(parents=True, exist_ok=True)
 
-        manifest_payload = {
-            "entry_id": entry.entry_id,
-            "name": entry.name,
-            "status": entry.status.value,
-        }
-        (backup_dir / "manifest.json").write_text(
-            json.dumps(manifest_payload, indent=2),
-            encoding="utf-8",
-        )
-
         # Download media
         media_skipped = False
-        if self._entry_artifact_is_stale_safe(entry) and self._media_file_exists(backup_dir, entry):
+        self._record_artifact(entry.entry_id, "Media files")
+        media_url = ""
+        if self._source_media_is_stale_safe(entry) and self._media_file_exists(backup_dir, entry):
             media_skipped = True
+            self._record_artifact(entry.entry_id, "Media files", "skipped")
             entry.downloads.mark_completed(ArtifactType.MEDIA)
             self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping unchanged media for old entry {entry.entry_id}")
         else:
@@ -406,10 +442,19 @@ class BackupManager:
                     media_url = str(media_url_value)
 
             if not media_skipped:
-                self._download_media_from_url(entry, backup_dir, media_url)
+                if not media_url:
+                    raise RetryableError(f"No source media URL available for entry {entry.entry_id}")
+                downloaded_bytes = self._download_media_from_url(entry, backup_dir, media_url)
+                with self._statistics_lock:
+                    self._run_bytes_downloaded += downloaded_bytes
+                    self._state_manager.increment_statistic("bytes_downloaded", downloaded_bytes)
+                self._record_artifact(entry.entry_id, "Media files", "downloaded")
                 entry.downloads.mark_completed(ArtifactType.MEDIA)
+            else:
+                self._record_artifact(entry.entry_id, "Media files", "skipped")
 
         if self._configuration.export.save_metadata and not self._is_image_entry(entry):
+            self._record_artifact(entry.entry_id, "Metadata")
             profile_fields = self._configuration.metadata.profile_fields
             field_names: list[str] = []
             seen_fields: set[str] = set()
@@ -480,22 +525,12 @@ class BackupManager:
 
             entry.downloads.mark_completed(ArtifactType.METADATA)
             self._state_manager.increment_statistic("metadata_written")
-
-        if (
-            self._configuration.export.save_api_responses or self._configuration.export.save_metadata
-        ) and not (
-            self._entry_artifact_is_stale_safe(entry)
-            and (backup_dir / "api_response.json").exists()
-        ):
-            (backup_dir / "api_response.json").write_text(
-                json.dumps({"entry_id": entry.entry_id}, indent=2),
-                encoding="utf-8",
-            )
-            entry.downloads.mark_completed(ArtifactType.API_RESPONSE)
-            self._state_manager.increment_statistic("api_responses_saved")
+            self._record_artifact(entry.entry_id, "Metadata", "downloaded")
 
         if self._configuration.export.save_captions:
+            self._record_artifact(entry.entry_id, "Captions")
             if self._entry_artifact_is_stale_safe(entry) and self._caption_file_exists(backup_dir):
+                self._record_artifact(entry.entry_id, "Captions", "skipped")
                 entry.downloads.mark_completed(ArtifactType.CAPTIONS)
                 self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping unchanged captions for old entry {entry.entry_id}")
             else:
@@ -512,34 +547,47 @@ class BackupManager:
                         continue
 
                     try:
-                        json_response = self._client_manager.get_caption_json(asset_id)
-                        if isinstance(json_response, str) and json_response.startswith("http"):
-                            response = requests.get(json_response, timeout=30)
-                            response.raise_for_status()
-                            json_response = response.text
-                        if isinstance(json_response, (str, bytes, bytearray)):
-                            payload = json.loads(json_response)
-                        else:
-                            payload = json_response
+                        caption_url = self._client_manager.get_caption_url(asset_id)
+                        response = requests.get(caption_url, timeout=30)
+                        response.raise_for_status()
+                        caption_bytes = response.content
+                        if not caption_bytes:
+                            continue
                         safe_asset_id = "".join(
                             character if character.isalnum() or character in {"-", "_", "."} else "_"
                             for character in str(asset_id)
                         )
-                        caption_path = backup_dir / f"caption_{safe_asset_id}.json"
-                        caption_path.write_text(
-                            json.dumps(payload, ensure_ascii=False, indent=2),
-                            encoding="utf-8",
-                        )
+                        extension = self._caption_extension(asset, caption_url)
+                        caption_path = backup_dir / f"caption_{safe_asset_id}.{extension}"
+                        caption_path.write_bytes(caption_bytes)
                         wrote_any = True
-                    except Exception:
+                    except CaptionAssetNotReadyError as exc:
+                        self._logger.info(
+                            EventId.ENTRY_SKIPPED,
+                            f"Skipping caption asset {asset_id} for entry {entry.entry_id}: {exc}",
+                        )
+                        continue
+                    except Exception as exc:
+                        self._logger.warning(
+                            EventId.WARNING,
+                            f"Could not download caption asset {asset_id} for entry {entry.entry_id}: {exc}",
+                        )
                         continue
 
                 if wrote_any:
                     entry.downloads.mark_completed(ArtifactType.CAPTIONS)
                     self._state_manager.increment_statistic("captions_downloaded")
+                    self._record_artifact(entry.entry_id, "Captions", "downloaded")
+                else:
+                    self._record_artifact(entry.entry_id, "Captions", "skipped")
 
         if self._configuration.export.save_thumbnails:
-            if self._entry_artifact_is_stale_safe(entry) and (backup_dir / "thumbnail.jpg").exists():
+            self._record_artifact(entry.entry_id, "Thumbnails")
+            stale_safe = self._entry_artifact_is_stale_safe(entry)
+            regular_thumbnail_exists = (backup_dir / "thumbnail.jpg").exists()
+            thumb_written = False
+            if stale_safe and regular_thumbnail_exists:
+                self._record_artifact(entry.entry_id, "Thumbnails", "skipped")
                 entry.downloads.mark_completed(ArtifactType.THUMBNAILS)
                 self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping unchanged thumbnail for old entry {entry.entry_id}")
             else:
@@ -548,7 +596,6 @@ class BackupManager:
                 except Exception:
                     thumbs = []
 
-                thumb_written = False
                 for thumb in thumbs:
                     thumb_id = _read_value(thumb, "id")
 
@@ -563,55 +610,143 @@ class BackupManager:
                     try:
                         resp = requests.get(url, timeout=30)
                         resp.raise_for_status()
-                        (backup_dir / "thumbnail.jpg").write_bytes(resp.content)
+                        content = resp.content
+                        if not content:
+                            continue
+                        (backup_dir / "thumbnail.jpg").write_bytes(content)
                         thumb_written = True
                         break
-                    except Exception:
+                    except Exception as exc:
+                        self._logger.warning(
+                            EventId.WARNING,
+                            f"Could not download thumbnail {thumb_id} for entry {entry.entry_id}: {exc}",
+                        )
                         continue
 
-                if thumb_written:
-                    entry.downloads.mark_completed(ArtifactType.THUMBNAILS)
-                    self._state_manager.increment_statistic("thumbnails_downloaded")
+            timeline_assets = []
+            list_timeline_assets = getattr(self._client_manager, "list_timeline_slide_assets", None)
+            if callable(list_timeline_assets):
+                try:
+                    timeline_assets = list_timeline_assets(entry.entry_id)
+                except Exception as exc:
+                    self._logger.warning(
+                        EventId.WARNING,
+                        f"Could not list timeline slide images for entry {entry.entry_id}: {exc}",
+                    )
+
+            timeline_written = False
+            timeline_skipped = False
+            for cue_point in timeline_assets:
+                asset_id = _read_value(cue_point, "assetId")
+                cue_point_id = _read_value(cue_point, "id") or asset_id
+                if not asset_id or asset_id == "N/A":
+                    continue
+
+                safe_id = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(cue_point_id)).rstrip(". ")
+                extension = str(_read_value(cue_point, "fileExt", "jpg") or "jpg").lower().lstrip(".")
+                if not re.fullmatch(r"[a-z0-9]{1,8}", extension):
+                    extension = "jpg"
+                slide_path = backup_dir / f"timeline_slide_{safe_id or asset_id}.{extension}"
+                if stale_safe and slide_path.is_file() and slide_path.stat().st_size > 0:
+                    timeline_skipped = True
+                    continue
+                try:
+                    image_url = self._client_manager.get_thumb_url(asset_id)
+                    response = requests.get(image_url, timeout=30)
+                    response.raise_for_status()
+                    if not response.content:
+                        continue
+                    temporary_path = slide_path.with_name(f".{slide_path.name}.part")
+                    temporary_path.write_bytes(response.content)
+                    temporary_path.replace(slide_path)
+                    timeline_written = True
+                except Exception as exc:
+                    self._logger.warning(
+                        EventId.WARNING,
+                        f"Could not download timeline slide image {asset_id} for entry {entry.entry_id}: {exc}",
+                    )
+
+            if thumb_written or timeline_written:
+                entry.downloads.mark_completed(ArtifactType.THUMBNAILS)
+                self._state_manager.increment_statistic("thumbnails_downloaded")
+                self._record_artifact(entry.entry_id, "Thumbnails", "downloaded")
+            elif regular_thumbnail_exists or timeline_skipped or stale_safe:
+                self._record_artifact(entry.entry_id, "Thumbnails", "skipped")
+            else:
+                self._record_artifact(entry.entry_id, "Thumbnails", "skipped")
 
         if self._configuration.export.save_attachments:
+            self._record_artifact(entry.entry_id, "Attachments")
             if self._entry_artifact_is_stale_safe(entry) and self._attachment_file_exists(backup_dir):
+                self._record_artifact(entry.entry_id, "Attachments", "skipped")
                 entry.downloads.mark_completed(ArtifactType.ATTACHMENTS)
                 self._logger.info(EventId.ENTRY_SKIPPED, f"Skipping unchanged attachments for old entry {entry.entry_id}")
             else:
                 try:
                     atts = self._client_manager.list_attachment_assets(entry.entry_id)
-                except Exception:
+                except Exception as exc:
+                    self._logger.warning(
+                        EventId.WARNING,
+                        f"Could not list attachments for entry {entry.entry_id}: {exc}",
+                    )
                     atts = []
 
                 att_written = False
                 for att in atts:
                     att_id = _read_value(att, "id")
-
                     if not att_id:
                         continue
 
                     try:
                         url = self._client_manager.get_attachment_url(att_id)
-                    except Exception:
+                    except Exception as exc:
+                        self._logger.warning(
+                            EventId.WARNING,
+                            f"Could not get attachment URL for {att_id} on entry {entry.entry_id}: {exc}",
+                        )
                         continue
 
                     try:
-                        resp = requests.get(url, timeout=30)
-                        resp.raise_for_status()
-                        parsed = urlparse(url)
-                        name = unquote(parsed.path.split("/")[-1]) or f"attachment_{att_id}"
-                        (backup_dir / name).write_bytes(resp.content)
+                        response = requests.get(url, timeout=30)
+                        response.raise_for_status()
+                        content = response.content
+                        if not content:
+                            continue
+
+                        filename = _read_value(att, "filename")
+                        if filename is NotImplemented or not filename:
+                            filename = _read_value(att, "title")
+                        if filename is NotImplemented or not filename:
+                            filename = unquote(urlparse(url).path.split("/")[-1])
+                        if not filename:
+                            filename = f"attachment_{att_id}"
+
+                        extension = _read_value(att, "fileExt")
+                        if extension is not NotImplemented and extension and not Path(str(filename)).suffix:
+                            filename = f"{filename}.{str(extension).strip().lstrip('.')}"
+                        filename = _safe_download_filename(str(filename), str(att_id))
+                        attachment_path = backup_dir / filename
+                        temporary_path = attachment_path.with_name(f".{attachment_path.name}.part")
+                        temporary_path.write_bytes(content)
+                        temporary_path.replace(attachment_path)
                         att_written = True
-                    except Exception:
+                    except Exception as exc:
+                        self._logger.warning(
+                            EventId.WARNING,
+                            f"Could not download attachment {att_id} for entry {entry.entry_id}: {exc}",
+                        )
                         continue
 
                 if att_written:
                     entry.downloads.mark_completed(ArtifactType.ATTACHMENTS)
                     self._state_manager.increment_statistic("attachments_downloaded")
+                    self._record_artifact(entry.entry_id, "Attachments", "downloaded")
+                else:
+                    self._record_artifact(entry.entry_id, "Attachments", "skipped")
 
         if media_skipped:
             self._logger.info(
-                EventId.DOWNLOAD_COMPLETED,
+                EventId.DOWNLOAD_SKIPPED,
                 f"Source media download skipped for {entry.entry_id}.",
             )
 
@@ -649,15 +784,45 @@ class BackupManager:
         return backup_dir / filename
 
     def _media_file_exists(self, backup_dir: Any, entry: BackupEntry) -> bool:
-        media_path = self._media_file_path(backup_dir, entry)
-        try:
-            if not media_path.is_file() or media_path.stat().st_size <= 1024:
-                return False
-            with media_path.open("rb") as media_file:
-                prefix = media_file.read(512)
-            return not _is_error_media_payload(prefix, "")
-        except OSError:
+        media_extensions = {
+            "video": {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".mpg", ".mpeg", ".ts", ".bin"},
+            "audio": {".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg", ".wma", ".bin"},
+            "image": {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".bin"},
+        }
+        media_type = entry.media_type.lower()
+        extensions = next(
+            (values for kind, values in media_extensions.items() if kind in media_type),
+            {".bin"},
+        )
+
+        candidates = [self._media_file_path(backup_dir, entry)]
+        candidates.extend(
+            path
+            for path in backup_dir.iterdir()
+            if path.name.lower() != "thumbnail.jpg" and path.suffix.lower() in extensions
+        )
+        checked: set[Any] = set()
+        for media_path in candidates:
+            if media_path in checked:
+                continue
+            checked.add(media_path)
+            try:
+                if not media_path.is_file() or media_path.stat().st_size <= 1024:
+                    continue
+                with media_path.open("rb") as media_file:
+                    prefix = media_file.read(512)
+                if not _is_error_media_payload(prefix, ""):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def _source_media_is_stale_safe(self, entry: BackupEntry) -> bool:
+        database_updated_at = (self._database_entry_updated_at or {}).get(entry.entry_id)
+        updated_at = entry.updated_at if database_updated_at is None else database_updated_at
+        if updated_at <= 0:
             return False
+        return datetime.fromtimestamp(updated_at, tz=UTC) < datetime.now(UTC) - timedelta(hours=24)
 
     def _source_image_url(self, entry_data: Any) -> str | None:
         value = _read_value(entry_data, "downloadUrl")
@@ -671,7 +836,7 @@ class BackupManager:
             return None
         return url
 
-    def _download_media_from_url(self, entry: BackupEntry, backup_dir: Any, media_url: str) -> None:
+    def _download_media_from_url(self, entry: BackupEntry, backup_dir: Any, media_url: str) -> int:
         file_path = self._media_file_path(backup_dir, entry)
         temporary_path = file_path.with_name(f".{file_path.name}.part")
         try:
@@ -691,7 +856,6 @@ class BackupManager:
                             prefix.extend(chunk[: 512 - len(prefix)])
                         media_file.write(chunk)
                         byte_count += len(chunk)
-                        self._state_manager.increment_statistic("bytes_downloaded", len(chunk))
 
                 content_type = (response.headers.get("Content-Type") or "").lower()
                 if byte_count == 0 or _is_error_media_payload(bytes(prefix), content_type):
@@ -701,6 +865,7 @@ class BackupManager:
                     )
 
             temporary_path.replace(file_path)
+            return byte_count
         except RetryableError:
             temporary_path.unlink(missing_ok=True)
             raise
@@ -713,7 +878,22 @@ class BackupManager:
 
     @staticmethod
     def _caption_file_exists(backup_dir: Any) -> bool:
-        return (backup_dir / "captions.vtt").exists() or any(backup_dir.glob("caption_*.json"))
+        return (backup_dir / "captions.vtt").exists() or any(
+            path.is_file()
+            for pattern in ("caption_*.srt", "caption_*.vtt")
+            for path in backup_dir.glob(pattern)
+        )
+
+    @staticmethod
+    def _caption_extension(asset: Any, caption_url: str) -> str:
+        extension = str(_read_value(asset, "fileExt", "") or "").strip().lower().lstrip(".")
+        if extension in {"srt", "vtt"}:
+            return extension
+
+        url_extension = Path(urlparse(caption_url).path).suffix.lower().lstrip(".")
+        if url_extension in {"srt", "vtt"}:
+            return url_extension
+        return "vtt"
 
     @staticmethod
     def _attachment_file_exists(backup_dir: Any) -> bool:
@@ -817,25 +997,41 @@ class BackupManager:
         except Exception:
             stats = None
 
-        media_count = sum(1 for entry in entries if entry.downloads.media)
-        metadata_count = sum(1 for entry in entries if entry.downloads.metadata)
-        captions_count = sum(1 for entry in entries if entry.downloads.captions)
-        thumbnails_count = sum(1 for entry in entries if entry.downloads.thumbnails)
-        attachments_count = sum(1 for entry in entries if entry.downloads.attachments)
-        api_resp_count = sum(1 for entry in entries if entry.downloads.api_response)
-
-        bytes_downloaded = stats.bytes_downloaded if stats is not None else None
+        bytes_downloaded = self._run_bytes_downloaded
         api_calls = stats.api_calls if stats is not None else None
+        elapsed_seconds = 0
+        if self._run_started_at is not None:
+            elapsed_seconds = max(
+                0,
+                int((datetime.now(UTC) - self._run_started_at).total_seconds()),
+            )
+        hours, remainder = divmod(elapsed_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        run_duration = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
         summary_lines = [
             f"Backup summary: {report_payload['count']} entries processed",
             f"  Completed: {report_payload['completed']}, Failed: {report_payload['failed']}",
-            f"  Media files: {media_count}, Metadata: {metadata_count}, Captions: {captions_count}",
-            f"  Thumbnails: {thumbnails_count}, Attachments: {attachments_count}, API responses: {api_resp_count}",
+            f"  Duration: {run_duration}",
         ]
 
-        if bytes_downloaded is not None:
-            summary_lines.append(f"  Bytes downloaded: {bytes_downloaded}")
+        with self._statistics_lock:
+            artifact_outcomes = dict(self._run_artifact_outcomes)
+        for artifact in SUMMARY_ARTIFACTS:
+            outcomes = [
+                outcome
+                for (_entry_id, item), outcome in artifact_outcomes.items()
+                if item == artifact
+            ]
+            total = len(outcomes)
+            downloaded = sum(outcome == "downloaded" for outcome in outcomes)
+            skipped = sum(outcome == "skipped" for outcome in outcomes)
+            failed = total - downloaded - skipped
+            summary_lines.append(
+                f"  {artifact}: total {total}, downloaded {downloaded}, skipped {skipped}, failed {failed}"
+            )
+
+        summary_lines.append(f"  Bytes downloaded this run: {bytes_downloaded}")
 
         if api_calls is not None:
             summary_lines.append(f"  API calls: {api_calls}")

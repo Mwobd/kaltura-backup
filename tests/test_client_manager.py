@@ -16,7 +16,7 @@ from kaltura_backup.config import (
     MetadataConfig,
     LoggingConfig,
 )
-from kaltura_backup.exceptions import ApiError, ClientError
+from kaltura_backup.exceptions import ApiError, CaptionAssetNotReadyError, ClientError
 
 
 class _FakeBaseEntry:
@@ -153,14 +153,35 @@ def test_list_entries_raises_client_error_when_no_entry_service(tmp_path: Path) 
         manager.list_entries()
 
 
-def test_get_caption_json_uses_serve_as_json(tmp_path: Path) -> None:
+def test_list_timeline_slide_assets_filters_thumb_cue_points(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    manager = KalturaClientManager(configuration, _NullLogger())
+
+    class CuePointService:
+        def list(self, filter_object, pager):
+            self.filter_object = filter_object
+            self.pager = pager
+            return [SimpleNamespace(id="cue-1", assetId="thumb-1")]
+
+    service = CuePointService()
+    client = SimpleNamespace(cuePoint=SimpleNamespace(cuePoint=service))
+    manager._pool = [KalturaSession(client, "ks")]
+    manager._connected = True
+
+    result = manager.list_timeline_slide_assets("entry-1")
+
+    assert result[0].assetId == "thumb-1"
+    assert service.filter_object.entryIdEqual == "entry-1"
+
+
+def test_get_caption_url_uses_original_asset_url(tmp_path: Path) -> None:
     configuration = _make_configuration(tmp_path)
     manager = KalturaClientManager(configuration, _NullLogger())
 
     class CaptionAssetService:
-        def serveAsJson(self, caption_asset_id):
+        def getUrl(self, caption_asset_id):
             assert caption_asset_id == "caption-1"
-            return "https://example.invalid/caption.json"
+            return "https://example.invalid/original-caption.srt"
 
     class CaptionService:
         captionAsset = CaptionAssetService()
@@ -171,7 +192,35 @@ def test_get_caption_json_uses_serve_as_json(tmp_path: Path) -> None:
     manager._pool = [KalturaSession(Client(), "ks")]
     manager._connected = True
 
-    assert manager.get_caption_json("caption-1") == "https://example.invalid/caption.json"
+    assert manager.get_caption_url("caption-1") == "https://example.invalid/original-caption.srt"
+
+
+def test_unready_caption_asset_is_not_retried(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    manager = KalturaClientManager(configuration, _NullLogger())
+
+    class CaptionAssetService:
+        calls = 0
+
+        def getUrl(self, _caption_asset_id):
+            self.calls += 1
+            raise RuntimeError('Caption asset "N/A" is not ready (CAPTION_ASSET_IS_NOT_READY)')
+
+    service = CaptionAssetService()
+
+    class CaptionPlugin:
+        captionAsset = service
+
+    class Client:
+        caption = CaptionPlugin()
+
+    manager._pool = [KalturaSession(Client(), "ks")]
+    manager._connected = True
+
+    with pytest.raises(CaptionAssetNotReadyError, match="not ready"):
+        manager.get_caption_url("caption-1")
+
+    assert service.calls == 1
 
 
 def test_get_metadata_xml_fetches_served_url(tmp_path: Path, monkeypatch) -> None:

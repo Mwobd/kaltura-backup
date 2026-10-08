@@ -116,9 +116,9 @@ def test_backup_manager_writes_artifacts_and_supports_resume(tmp_path: Path) -> 
     manager.run([entry])
 
     backup_dir = configuration.paths.backup_dir / entry.entry_id
-    assert (backup_dir / "manifest.json").exists()
+    assert not (backup_dir / "manifest.json").exists()
     assert (backup_dir / "metadata.csv").exists()
-    assert (backup_dir / "api_response.json").exists()
+    assert not (backup_dir / "api_response.json").exists()
 
 
 def test_backup_manager_emits_progress_updates(tmp_path: Path, capsys) -> None:
@@ -165,7 +165,7 @@ def test_backup_manager_skips_existing_media_but_writes_artifacts(tmp_path: Path
 
     assert (backup_dir / "media.mp4").read_bytes() == b"existing-media" * 200
     assert (backup_dir / "metadata.csv").exists()
-    assert (backup_dir / "api_response.json").exists()
+    assert not (backup_dir / "api_response.json").exists()
 
 
 def test_backup_manager_uses_configured_worker_count(tmp_path: Path) -> None:
@@ -331,7 +331,7 @@ def test_old_entry_with_existing_artifacts_is_safe_to_skip(tmp_path: Path) -> No
     backup_dir = tmp_path / "entry-old"
     backup_dir.mkdir()
     (backup_dir / "media.mp4").write_bytes(b"existing-media" * 200)
-    (backup_dir / "caption_caption-1.json").write_text("{}", encoding="utf-8")
+    (backup_dir / "caption_caption-1.srt").write_text("caption", encoding="utf-8")
 
     assert BackupManager._entry_artifact_is_stale_safe(entry) is True
     manager = object.__new__(BackupManager)
@@ -353,6 +353,174 @@ def test_small_error_body_is_not_considered_existing_media(tmp_path: Path) -> No
     entry = BackupEntry("entry-error", "old", updated_at=1, created_at=1, media_type="video")
 
     assert manager._media_file_exists(backup_dir, entry) is False
+
+
+def test_source_media_skip_uses_database_updated_at_and_24_hour_window(tmp_path: Path) -> None:
+    recent_api_timestamp = int(datetime.now(UTC).timestamp())
+    old_database_timestamp = int((datetime.now(UTC) - timedelta(hours=25)).timestamp())
+    entry = BackupEntry(
+        entry_id="entry-database-freshness",
+        name="old source",
+        updated_at=recent_api_timestamp,
+        created_at=1,
+    )
+    manager = object.__new__(BackupManager)
+    manager._database_entry_updated_at = {entry.entry_id: old_database_timestamp}
+
+    assert manager._source_media_is_stale_safe(entry) is True
+
+    manager._database_entry_updated_at[entry.entry_id] = int(
+        (datetime.now(UTC) - timedelta(hours=23)).timestamp()
+    )
+    assert manager._source_media_is_stale_safe(entry) is False
+
+
+def test_old_database_source_media_skips_download_when_file_exists(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    old_database_timestamp = int((datetime.now(UTC) - timedelta(hours=25)).timestamp())
+
+    class Client(DummyClientManager):
+        def get_entry_media_url(self, _entry_id):
+            raise AssertionError("Existing source media should not be downloaded again")
+
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=StateManager(configuration),
+        client_manager=Client(),
+        logger=initialize_logger(configuration),
+        database_entry_updated_at={"entry-db-old": old_database_timestamp},
+    )
+    entry = BackupEntry(
+        "entry-db-old",
+        "old source",
+        updated_at=int(datetime.now(UTC).timestamp()),
+        created_at=1,
+        media_type="video",
+    )
+    backup_dir = configuration.paths.backup_dir / entry.entry_id
+    backup_dir.mkdir(parents=True)
+    (backup_dir / "media.mp4").write_bytes(b"cached-video-data" * 200)
+
+    manager._download_entry(entry, {})
+
+    assert entry.downloads.media is True
+
+
+def test_old_database_source_media_detects_title_named_video(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=StateManager(configuration),
+        client_manager=DummyClientManager(),
+        logger=initialize_logger(configuration),
+    )
+    backup_dir = tmp_path / "entry-title-file"
+    backup_dir.mkdir()
+    (backup_dir / "Capture session_ final.mp4").write_bytes(b"valid-video-data" * 200)
+    entry = BackupEntry(
+        "entry-title-file",
+        "Capture session: final",
+        updated_at=1,
+        created_at=1,
+        media_type="video",
+    )
+
+    assert manager._media_file_exists(backup_dir, entry) is True
+
+
+def test_attachment_download_uses_kaltura_filename_and_extension(tmp_path: Path, monkeypatch) -> None:
+    configuration = _make_configuration(tmp_path)
+    configuration = Configuration(
+        connection=configuration.connection,
+        paths=configuration.paths,
+        download=configuration.download,
+        export=ExportConfig(
+            save_metadata=False,
+            save_api_responses=False,
+            save_captions=False,
+            save_thumbnails=False,
+            save_attachments=True,
+        ),
+        metadata=configuration.metadata,
+        logging=configuration.logging,
+    )
+
+    class AttachmentClient(DummyClientManager):
+        def list_attachment_assets(self, _entry_id):
+            return [SimpleNamespace(id="attachment-1", filename="slides:final", fileExt="pptx")]
+
+        def get_attachment_url(self, attachment_id):
+            assert attachment_id == "attachment-1"
+            return "https://cdn.example/asset/download"
+
+    class Response:
+        content = b"presentation-bytes"
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(backup_module.requests, "get", lambda *_args, **_kwargs: Response())
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=StateManager(configuration),
+        client_manager=AttachmentClient(),
+        logger=initialize_logger(configuration),
+    )
+    entry = BackupEntry("entry-attachments", "demo", updated_at=2_000_000_000, created_at=1)
+
+    manager._download_entry(entry, {})
+
+    attachment_path = configuration.paths.backup_dir / entry.entry_id / "slides_final.pptx"
+    assert attachment_path.read_bytes() == Response.content
+
+
+def test_timeline_slide_images_are_saved_separately(tmp_path: Path, monkeypatch) -> None:
+    configuration = _make_configuration(tmp_path)
+    configuration = Configuration(
+        connection=configuration.connection,
+        paths=configuration.paths,
+        download=configuration.download,
+        export=ExportConfig(
+            save_metadata=False,
+            save_api_responses=False,
+            save_captions=False,
+            save_thumbnails=True,
+            save_attachments=False,
+        ),
+        metadata=configuration.metadata,
+        logging=configuration.logging,
+    )
+
+    class TimelineClient(DummyClientManager):
+        def list_thumb_assets(self, _entry_id):
+            return []
+
+        def list_timeline_slide_assets(self, _entry_id):
+            return [SimpleNamespace(id="cue-1", assetId="slide-asset-1")]
+
+        def get_thumb_url(self, asset_id):
+            assert asset_id == "slide-asset-1"
+            return "https://cdn.example/slide.jpg"
+
+    class Response:
+        content = b"slide-image-bytes"
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(backup_module.requests, "get", lambda *_args, **_kwargs: Response())
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=StateManager(configuration),
+        client_manager=TimelineClient(),
+        logger=initialize_logger(configuration),
+    )
+    entry = BackupEntry("entry-slides", "demo", updated_at=2_000_000_000, created_at=1)
+
+    manager._download_entry(entry, {})
+
+    slides_path = configuration.paths.backup_dir / entry.entry_id / "timeline_slide_cue-1.jpg"
+    assert slides_path.read_bytes() == Response.content
 
 
 def test_recent_entry_is_not_safe_to_skip(tmp_path: Path) -> None:
@@ -511,6 +679,64 @@ def test_image_without_direct_url_is_skipped_without_retrying(tmp_path: Path) ->
 
     assert entry.downloads.media is False
     assert not (configuration.paths.backup_dir / entry.entry_id / "image.jpg").exists()
+
+
+def test_caption_backup_saves_original_srt_bytes(tmp_path: Path, monkeypatch) -> None:
+    configuration = _make_configuration(tmp_path)
+    configuration = Configuration(
+        connection=configuration.connection,
+        paths=configuration.paths,
+        download=configuration.download,
+        export=ExportConfig(
+            save_metadata=False,
+            save_api_responses=False,
+            save_captions=True,
+            save_thumbnails=False,
+            save_attachments=False,
+        ),
+        metadata=configuration.metadata,
+        logging=configuration.logging,
+    )
+    caption_bytes = b"1\r\n00:00:01,000 --> 00:00:02,000\r\nOriginal caption\r\n"
+
+    class CaptionClient(DummyClientManager):
+        def list_caption_assets(self, entry_id):
+            assert entry_id == "entry-caption"
+            return [SimpleNamespace(id="caption-asset", fileExt="srt")]
+
+        def get_caption_url(self, caption_asset_id):
+            assert caption_asset_id == "caption-asset"
+            return "https://example.invalid/caption.srt"
+
+    class Response:
+        content = caption_bytes
+
+        def raise_for_status(self):
+            return None
+
+    requested = []
+    monkeypatch.setattr(
+        backup_module.requests,
+        "get",
+        lambda url, **kwargs: (requested.append(url) or Response()),
+    )
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=StateManager(configuration),
+        client_manager=CaptionClient(),
+        logger=initialize_logger(configuration),
+    )
+    entry = BackupEntry("entry-caption", "Caption entry", updated_at=2_000_000_000, created_at=1)
+    backup_dir = configuration.paths.backup_dir / entry.entry_id
+    backup_dir.mkdir(parents=True)
+    (backup_dir / "media.mp4").write_bytes(b"cached-media" * 200)
+
+    manager._download_entry(entry, {})
+
+    caption_path = backup_dir / "caption_caption-asset.srt"
+    assert requested == ["https://example.invalid/caption.srt"]
+    assert caption_path.read_bytes() == caption_bytes
+    assert not (backup_dir / "caption_caption-asset.json").exists()
 
 
 def test_old_entry_detects_all_existing_non_metadata_artifacts(tmp_path: Path) -> None:

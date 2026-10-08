@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 import json
 import sys
 
@@ -90,3 +91,75 @@ def test_backup_manager_writes_detailed_report(tmp_path: Path) -> None:
     assert payload["completed"] == 1
     assert payload["failed"] == 0
     assert payload["entries"][0]["entry_id"] == "entry-9"
+
+
+def test_summary_reports_bytes_downloaded_this_run(tmp_path: Path, capsys) -> None:
+    configuration = _make_configuration(tmp_path)
+    state_manager = StateManager(configuration)
+    state_manager.increment_statistic("bytes_downloaded", 10_966_136_606)
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=state_manager,
+        client_manager=DummyClientManager(),
+        logger=initialize_logger(configuration),
+    )
+    manager._run_bytes_downloaded = 835_252_329
+    manager._run_started_at = datetime.now(UTC) - timedelta(seconds=65)
+
+    manager._write_report([])
+
+    summary = capsys.readouterr().out
+    assert "Bytes downloaded this run: 835252329" in summary
+    assert "Duration: 00:01:05" in summary
+
+
+def test_skipped_media_run_reports_zero_not_persisted_byte_total(tmp_path: Path, capsys) -> None:
+    configuration = _make_configuration(tmp_path)
+    state_manager = StateManager(configuration)
+    state_manager.increment_statistic("bytes_downloaded", 179_000_000)
+    logger = initialize_logger(configuration)
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=state_manager,
+        client_manager=DummyClientManager(),
+        logger=logger,
+        database_entry_updated_at={
+            "entry-old": int((datetime.now(UTC) - timedelta(hours=25)).timestamp())
+        },
+    )
+    entry = BackupEntry(
+        entry_id="entry-old",
+        name="old video",
+        updated_at=int(datetime.now(UTC).timestamp()),
+        created_at=1,
+        media_type="video",
+    )
+    backup_dir = configuration.paths.backup_dir / entry.entry_id
+    backup_dir.mkdir(parents=True)
+    (backup_dir / "old video.mp4").write_bytes(b"cached-video" * 200)
+
+    manager.run([entry])
+
+    assert "Bytes downloaded this run: 0" in capsys.readouterr().out
+    assert state_manager.statistics.bytes_downloaded == 179_000_000
+
+
+def test_summary_splits_artifact_totals_downloads_and_skips(tmp_path: Path, capsys) -> None:
+    configuration = _make_configuration(tmp_path)
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=StateManager(configuration),
+        client_manager=DummyClientManager(),
+        logger=initialize_logger(configuration),
+    )
+    manager._record_artifact("video-1", "Media files", "downloaded")
+    manager._record_artifact("video-2", "Media files", "skipped")
+    manager._record_artifact("video-3", "Media files")
+    manager._record_artifact("caption-1", "Captions", "downloaded")
+    manager._record_artifact("caption-2", "Captions", "skipped")
+
+    manager._write_report([])
+
+    summary = capsys.readouterr().out
+    assert "Media files: total 3, downloaded 1, skipped 1, failed 1" in summary
+    assert "Captions: total 2, downloaded 1, skipped 1, failed 0" in summary

@@ -21,6 +21,14 @@ To preview what would happen without writing backup artifacts, use:
 python -m kaltura_backup --config config.ini --dry-run
 ```
 
+For troubleshooting, you can also log the Kaltura session KS during a dry run:
+
+```bat
+python -m kaltura_backup --config config.ini --dry-run --log-ks
+```
+
+`--log-ks` requires `--dry-run`; using it without that switch exits with an error. The KS is written to the log file only, not the console. It is a session credential, so protect the log and remove the KS after troubleshooting.
+
 To retry only entries that were previously marked as failed in the saved state, use:
 
 ```bat
@@ -107,7 +115,7 @@ If you are upgrading an existing database, confirm those columns exist before re
 
 During import, every XML leaf tag is also mapped to a safe MySQL column name. Known Kaltura tags use the existing typed columns; previously unknown tags are added as nullable `LONGTEXT` columns automatically. The `<id>` tag is mapped to `EntryId` and is not duplicated as an `ID` column. Existing databases are migrated by removing the obsolete `ID` column when the schema is checked.
 
-The first caption request, `caption_captionAsset.list`, is stored in `kaltura_caption_assets`. Its XML tags become columns, with `CaptionAssetId` as the primary key. The later `caption_captionAsset.serveAsJson` response is written to the per-caption JSON file only and is not stored in MySQL.
+The `captionAsset.list` response is stored in `kaltura_caption_assets`. Its XML tags become columns, with `CaptionAssetId` as the primary key. Original caption files are downloaded through `captionAsset.getUrl` and saved byte-for-byte as `caption_<caption_asset_id>.srt` or `.vtt`; the transformed `serveAsJson` response is not used.
 
 The `thumbAsset.list` and `attachmentAsset.list` responses are stored separately in `kaltura_thumb_assets` and `kaltura_attachment_assets`. Their IDs are the primary keys, and both tables include `CreatedAt`, `UpdatedAt`, `CreatedAtHR`, and `UpdatedAtHR` with UTC conversions. URL/download responses are not stored in these tables.
 
@@ -191,15 +199,13 @@ backup_destination/
 ??? entry_1_id/
 ?   ??? media.mp4
 ?   ??? metadata.csv
-?   ??? caption_caption-asset-1.json
+?   ??? caption_caption-asset-1.srt
 ?   ??? thumbnail.jpg
 ?   ??? attachment.txt
-?   ??? api_response.json
 ??? entry_2_id/
 ?   ??? audio.mp3
 ?   ??? metadata.csv
 ?   ??? ...
-??? report.json
 ```
 
 The root of the backup destination contains a `report.json` file with overall backup statistics.
@@ -210,14 +216,16 @@ For each Kaltura entry, the following artifacts are downloaded **if present** an
 
 Image entries use the direct `downloadUrl` returned with the Kaltura entry instead of the video PlayManifest URL. If Kaltura does not provide a direct image source URL, the image source is skipped with a warning; thumbnail downloads remain a separate artifact.
 
+When `Export.SaveThumbnails = true`, regular thumbnails are saved as `thumbnail.jpg` and timeline slide images referenced by Kaltura thumb cue points are saved separately as `timeline_slide_<cuepoint_id>.<ext>`. When `Export.SaveAttachments = true`, attachment assets use the filename and extension returned by Kaltura, with a sanitized fallback based on the asset ID.
+
 | Artifact | Filename | Enabled by | Description |
 |----------|----------|-----------|-------------|
 | **Media** | `media.mp4`, `audio.mp3`, `image.jpg`, or `media.bin` | `Export.SaveMedia` | The main media file. Format depends on media type: video ? `.mp4`, audio ? `.mp3`, image ? `.jpg`, other ? `.bin` |
 | **Custom Metadata** | `metadata.csv` | `Export.SaveMetadata` | Custom metadata in CSV format with header row containing `entry_id`, `name`, and configured metadata field names (from `[metadata_profiles]` section). Only includes profiles specified in the configuration. |
-| **Captions** | `caption_<caption_asset_id>.json` | `Export.SaveCaptions` | JSON caption response for each caption asset, retrieved through `captionAsset.serveAsJson`. |
-| **Thumbnails** | `thumbnail.jpg` | `Export.SaveThumbnails` | Entry thumbnail image. Includes all available thumbnail assets for the entry. |
-| **Attachments** | `attachment.txt` | `Export.SaveAttachments` | Text file listing attachment URLs. One URL per line. Empty file if no attachments are present. |
-| **API Response** | `api_response.json` | `Export.SaveApiResponses` or `Export.SaveMetadata` | JSON response containing basic entry metadata (`entry_id` and `name`). Written whenever metadata or API responses are saved. |
+| **Captions** | `caption_<caption_asset_id>.srt` or `.vtt` | `Export.SaveCaptions` | Original caption asset file, downloaded through `captionAsset.getUrl` and saved without transforming its contents. |
+| **Thumbnails and timeline slides** | `thumbnail.jpg`, `timeline_slide_<cuepoint_id>.<ext>` | `Export.SaveThumbnails` | Entry thumbnail plus each slide image referenced by a Kaltura thumb cue point. |
+| **Attachments** | Kaltura-provided attachment filename | `Export.SaveAttachments` | Original attachment file downloaded from the attachment asset URL. |
+Neither `manifest.json` nor `api_response.json` is created; entry identity and outcome are recorded in the state file and backup report.
 
 ### Resume behavior
 
@@ -226,7 +234,7 @@ When running with `ResumeDownloads = true` in the configuration:
 - Metadata, captions, attachments, images, and thumbnails are **always downloaded** and overwritten
 - This allows you to refresh supplementary data without re-downloading large media files
 
-Independently of `ResumeDownloads`, media, captions, thumbnails, attachments, and saved API responses are skipped when an entry's positive `UpdatedAt` UNIX timestamp is more than 48 hours old and the corresponding artifact already exists. The timestamp comparison uses UTC. `metadata.csv` is the only downloadable artifact that is always refreshed.
+Independently of `ResumeDownloads`, source media is skipped when its file already exists and the database `UpdatedAt` UNIX timestamp is more than 24 hours old (or the API timestamp when no database is configured). Captions, thumbnails, and attachments use the 48-hour threshold. All timestamp comparisons use UTC. `metadata.csv` is the only downloadable artifact that is always refreshed.
 
 ## Project roadmap status
 
@@ -236,7 +244,7 @@ The implementation has moved beyond the initial scaffold and is now in the later
 - Phase 2 — ? Complete: configuration loading, validation, logging, domain models, and state management.
 - Phase 3 — ? Complete: the Kaltura client abstraction is in place, with a stubbed fallback for environments without the SDK; live SDK integration still awaits broader real-world validation.
 - Phase 4 — ? Complete: backup orchestration, state persistence, resume-aware skipping, and manifest generation are implemented.
-- Phase 5 — ? Complete: backup artifacts for metadata, API responses, captions, thumbnails, and attachments are produced during runs.
+- Phase 5 — ? Complete: backup artifacts for metadata, captions, thumbnails, attachments, and media are produced during runs.
 - Phase 6 — ? Complete: retry handling, reporting, worker-pool concurrency, and graceful shutdown are implemented.
 - Phase 7 — ?? In progress: CLI entrypoints, user-friendly failure handling, dry-run, and retrying previously failed entries are implemented; state rebuild remains a future enhancement.
 - Phase 8 — ? Complete: regression tests cover the core workflow, CLI behavior, packaging, configuration, and reporting.

@@ -112,6 +112,10 @@ class PermanentError(BackupError):
     """
 
 
+class CaptionAssetNotReadyError(PermanentError):
+    """Caption asset is not ready to serve and should not be retried now."""
+
+
 class ClientError(PermanentError):
     """
     Kaltura client configuration or integration error.

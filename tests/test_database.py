@@ -163,7 +163,10 @@ def test_get_backup_entry_ids_selects_active_type_one_rows(monkeypatch) -> None:
             self.parameters = parameters
 
         def fetchall(self):
-            return [{"EntryId": "entry-1"}, {"EntryId": "entry-2"}]
+            return [
+                {"EntryId": "entry-1", "UpdatedAt": 100},
+                {"EntryId": "entry-2", "UpdatedAt": 200},
+            ]
 
         def close(self):
             return None
@@ -182,9 +185,12 @@ def test_get_backup_entry_ids_selects_active_type_one_rows(monkeypatch) -> None:
     monkeypatch.setattr(manager, "connect", lambda: connection)
 
     assert manager.get_backup_entry_ids() == ["entry-1", "entry-2"]
+    assert "SELECT EntryId, UpdatedAt" in connection.cursor_instance.statement
     assert "Type = %s" in connection.cursor_instance.statement
     assert "IsDeleted = 0" in connection.cursor_instance.statement
     assert connection.cursor_instance.parameters == (1,)
+
+    assert manager.get_backup_entry_updated_at() == {"entry-1": 100, "entry-2": 200}
 
 
 def test_caption_list_xml_extracts_one_record_per_asset() -> None:

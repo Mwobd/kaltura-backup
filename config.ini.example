@@ -78,8 +78,8 @@ VerifyChecksum = false
 ; Download and save custom metadata as CSV files (required)
 SaveMetadata = true
 
-; Save raw API responses as JSON files (required)
-SaveApiResponses = true
+; Deprecated: api_response.json output is disabled and this value is ignored.
+SaveApiResponses = false
 
 ; Download and save captions/subtitles (required)
 SaveCaptions = false

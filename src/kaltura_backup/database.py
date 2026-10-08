@@ -509,18 +509,26 @@ class DatabaseManager:
 
     def get_backup_entry_ids(self) -> list[str]:
         """Return active media entry IDs selected for the main backup run."""
+        return list(self.get_backup_entry_updated_at())
+
+    def get_backup_entry_updated_at(self) -> dict[str, int | None]:
+        """Return active Type=1 entry IDs and their database UpdatedAt epochs."""
         connection = self.connect()
         cursor = connection.cursor(dictionary=True)
         try:
             cursor.execute(
-                "SELECT EntryId FROM kaltura_entries "
+                "SELECT EntryId, UpdatedAt FROM kaltura_entries "
                 "WHERE Type = %s AND IsDeleted = 0 ORDER BY EntryId",
                 (1,),
             )
             rows = cursor.fetchall()
-            entry_ids = [str(row["EntryId"]) for row in rows if row.get("EntryId")]
-            self._log(EventId.ENTRY_DISCOVERED, f"Selected {len(entry_ids)} Type=1 entries from database.")
-            return entry_ids
+            entry_updates = {
+                str(row["EntryId"]): self._parse_int(row.get("UpdatedAt"))
+                for row in rows
+                if row.get("EntryId")
+            }
+            self._log(EventId.ENTRY_DISCOVERED, f"Selected {len(entry_updates)} Type=1 entries from database.")
+            return entry_updates
         finally:
             cursor.close()
             connection.close()

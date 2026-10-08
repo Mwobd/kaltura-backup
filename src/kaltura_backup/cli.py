@@ -131,6 +131,7 @@ def main(
                 client_manager.disconnect()
 
         database_entry_ids: list[str] | None = None
+        database_entry_updated_at: dict[str, int | None] | None = None
         if configuration.database is not None:
             try:
                 logger.info(EventId.APPLICATION_START, "Running daily database sync before backup workflow.")
@@ -140,11 +141,13 @@ def main(
                 if hasattr(client_manager, "set_xml_response_handler"):
                     client_manager.set_xml_response_handler(database_manager.store_xml_response)
                 database_manager.sync_if_due(client_manager, force=args.force_database_sync)
-                database_entry_ids = database_manager.get_backup_entry_ids()
+                database_entry_updated_at = database_manager.get_backup_entry_updated_at()
+                database_entry_ids = list(database_entry_updated_at)
             except Exception as exc:
                 logger.exception(EventId.ERROR, "Database sync before backup failed", exc)
                 print(f"Database sync skipped because of an error: {exc}", file=sys.stderr)
                 database_entry_ids = []
+                database_entry_updated_at = {}
                 client_manager.disconnect()
 
         manager = BackupManager(
@@ -154,6 +157,7 @@ def main(
             logger=logger,
             dry_run=args.dry_run,
             database_entry_ids=database_entry_ids,
+            database_entry_updated_at=database_entry_updated_at,
         )
 
         if args.retry_failed:
