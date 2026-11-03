@@ -13,10 +13,10 @@ from kaltura_backup.config import (
     MetadataConfig,
     LoggingConfig,
 )
-from kaltura_backup.models import BackupEntry
+from kaltura_backup.models import BackupEntry, BackupStatus
 from kaltura_backup.state import StateManager
 from kaltura_backup.logging_utils import initialize_logger
-from kaltura_backup.exceptions import RetryableError
+from kaltura_backup.exceptions import EntryNotFoundError, RetryableError
 
 
 class FlakyClientManager:
@@ -92,3 +92,38 @@ def test_backup_manager_retries_transient_failures(tmp_path: Path) -> None:
     assert processed[0].status.value == "COMPLETED"
     assert client_manager.calls == 3
     assert state_manager.statistics.entries_retried == 1
+
+
+def test_backup_manager_skips_deleted_entries_without_retry(tmp_path: Path) -> None:
+    configuration = _make_configuration(tmp_path)
+    state_manager = StateManager(configuration)
+    logger = initialize_logger(configuration)
+
+    class DeletedClientManager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def connect(self) -> None:
+            return None
+
+        def disconnect(self) -> None:
+            return None
+
+        def get_entry(self, entry_id: str):
+            self.calls += 1
+            raise EntryNotFoundError(f"Entry {entry_id} does not exist")
+
+    client_manager = DeletedClientManager()
+    manager = BackupManager(
+        configuration=configuration,
+        state_manager=state_manager,
+        client_manager=client_manager,
+        logger=logger,
+    )
+
+    entry = BackupEntry(entry_id="missing-entry", name="demo", updated_at=1, created_at=1)
+    processed = manager.run([entry])
+
+    assert processed[0].status is BackupStatus.SKIPPED
+    assert client_manager.calls == 1
+    assert state_manager.statistics.entries_failed == 0

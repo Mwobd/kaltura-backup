@@ -92,10 +92,10 @@ SaveAttachments = false
 
 [mysql]
 host = localhost
-database = backup_10206
+database = backup_123
 root_user = root
 root_password = <dbrootpassword>
-user = backupuser10206
+user = backupuser123
 password = <dbuserpassword>
 
 [Logging]
@@ -110,10 +110,10 @@ KeepLogs = 7
 ; Custom metadata profiles to download for each entry (optional, empty section is valid)
 ; Format: profile_id = field_name_1, field_name_2, field_name_3, ...
 ; Example entries (these are specific to your Kaltura configuration):
-4696 = Attributie, LinkNaarBron, LinkNaarLicentievoorwaarden
-4694 = VrijwaringsverklaringPortretrecht
-4695 = Contractpartij, Contractnummer, Artikel24ARVODI2018OngewijzigdVanKrachtInContract
-4697 = GrondslagAVG
-4698 = Directie
-4699 = Status, EindeBewaartermijn, UitzonderingOpVernietiging
-4693 = Proces, Afdoeningsjaar, UitgeplaatstBijNIBG, LinkNaarNIBG
+1236 = Attrib, SourceLink, LicLink
+1234 = Waver
+1235 = Cparty, Cnumber, Article
+1237 = DRM
+1238 = Section
+1239 = State, SaveDate, Destruction
+1233 = Process, Year, Copied, LinktoCopy

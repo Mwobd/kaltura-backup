@@ -574,6 +574,24 @@ class DatabaseManager:
         self._log(EventId.APPLICATION_STOP, f"Database sync completed; processed {len(synced)} entries.")
         return bool(synced)
 
+    def reconcile_deleted_entries(self, sync_date: str | None = None) -> int:
+        """Mark rows that were not refreshed in this sync as deleted."""
+        today = sync_date or self._entry_updated_today()
+        connection = self.connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "UPDATE kaltura_entries SET IsDeleted = 1, IsDeletedDate = %s "
+                "WHERE IsDeleted = 0 AND (EntryUpdated IS NULL OR EntryUpdated <> %s)",
+                (today, today),
+            )
+            return cursor.rowcount or 0
+        finally:
+            if hasattr(cursor, "close"):
+                cursor.close()
+            if hasattr(connection, "close"):
+                connection.close()
+
     def sync_from_api(self, client_manager: Any, page_size: int = 500) -> list[str]:
         self.ensure_schema()
         if hasattr(client_manager, "list_all_entries"):
@@ -590,6 +608,10 @@ class DatabaseManager:
             self.upsert_entry(payload)
             if index == 1 or index % 100 == 0 or index == len(entries):
                 self._log(EventId.ENTRY_COMPLETED, f"Stored database entry {index}/{len(entries)}.")
+
+        stale_rows = self.reconcile_deleted_entries()
+        if stale_rows:
+            self._log(EventId.ENTRY_SKIPPED, f"Marked {stale_rows} stale entries as deleted after the sync.")
 
         return [
             str(self._payload_to_mapping(item).get("id") or self._payload_to_mapping(item).get("EntryId") or "")

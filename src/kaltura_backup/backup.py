@@ -23,7 +23,7 @@ from typing import Any
 import requests
 
 from .config import Configuration
-from .exceptions import BackupCancelled, CaptionAssetNotReadyError, PermanentError, RetryableError
+from .exceptions import BackupCancelled, CaptionAssetNotReadyError, EntryNotFoundError, PermanentError, RetryableError
 from .logging_utils import BackupLogger, EventId
 from .models import ArtifactType, BackupEntry, BackupStatus
 from .state import StateManager
@@ -327,6 +327,14 @@ class BackupManager:
                 entry_data = self._fetch_entry(entry)
                 self._download_entry(entry, entry_data)
                 break
+            except EntryNotFoundError as exc:
+                entry.skip()
+                self._state_manager.increment_statistic("entries_skipped")
+                self._logger.warning(
+                    EventId.ENTRY_SKIPPED,
+                    f"Entry {entry.entry_id} is no longer on Kaltura; skipping without retry: {exc}",
+                )
+                break
             except RetryableError as exc:
                 attempt += 1
                 entry.retry.register_failure(exc)
@@ -351,7 +359,11 @@ class BackupManager:
             self._state_manager.increment_statistic("entries_completed")
             self._logger.info(EventId.ENTRY_COMPLETED, f"Entry {entry.entry_id} completed")
 
-        if entry.status is not BackupStatus.COMPLETED and entry.status is not BackupStatus.FAILED:
+        if (
+            entry.status is not BackupStatus.COMPLETED
+            and entry.status is not BackupStatus.FAILED
+            and entry.status is not BackupStatus.SKIPPED
+        ):
             entry.complete()
             self._state_manager.increment_statistic("entries_completed")
 
@@ -367,7 +379,7 @@ class BackupManager:
 
         result = self._client_manager.get_entry(entry.entry_id)
         if result is None:
-            raise RetryableError("Entry lookup returned no data")
+            raise EntryNotFoundError(f"Entry {entry.entry_id} is no longer available on Kaltura.")
 
         entry.name = str(_read_value(result, "name", entry.name))
         entry.reference_id = str(_read_value(result, "referenceId", entry.reference_id))

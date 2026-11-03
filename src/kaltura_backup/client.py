@@ -131,6 +131,7 @@ from .exceptions import (
     AuthenticationError,
     CaptionAssetNotReadyError,
     ClientError,
+    EntryNotFoundError,
     NetworkError,
     RetryExceededError,
     RetryableError,
@@ -1242,6 +1243,16 @@ class KalturaClientManager:
 
         if "invalid_ks" in message:
             raise SessionExpiredError(
+                str(exception)
+            ) from exception
+
+        if (
+            "not found" in message
+            or "does not exist" in message
+            or "object is missing" in message
+            or "entry id" in message and "not found" in message
+        ):
+            raise EntryNotFoundError(
                 str(exception)
             ) from exception
 

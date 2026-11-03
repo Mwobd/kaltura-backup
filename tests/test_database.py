@@ -65,6 +65,7 @@ def test_sync_from_api_calls_all_entries_once(monkeypatch) -> None:
 
     monkeypatch.setattr(manager, "ensure_schema", lambda: None)
     monkeypatch.setattr(manager, "upsert_entry", lambda payload: None)
+    monkeypatch.setattr(manager, "reconcile_deleted_entries", lambda: 0)
 
     assert manager.sync_from_api(Client(), page_size=500) == ["entry-123"]
     assert calls == [500]
@@ -88,9 +89,58 @@ def test_sdk_entry_objects_are_converted_before_upsert(monkeypatch) -> None:
 
     monkeypatch.setattr(manager, "ensure_schema", lambda: None)
     monkeypatch.setattr(manager, "upsert_entry", stored.append)
+    monkeypatch.setattr(manager, "reconcile_deleted_entries", lambda: 0)
 
     assert manager.sync_from_api(Client()) == ["entry-123"]
     assert stored[0] == {"id": "entry-123", "name": "Example", "createdAt": 100}
+
+
+def test_sync_marks_stale_rows_as_deleted_after_api_sync(monkeypatch) -> None:
+    manager = object.__new__(DatabaseManager)
+    manager._logger = None
+    seen_entries = []
+    stale_updates = []
+
+    class Client:
+        def list_all_entries(self, page_size: int):
+            return [{"id": "entry-123"}]
+
+    monkeypatch.setattr(manager, "ensure_schema", lambda: None)
+
+    def fake_upsert(payload):
+        seen_entries.append(payload)
+
+    monkeypatch.setattr(manager, "upsert_entry", fake_upsert)
+
+    class Cursor:
+        def __init__(self) -> None:
+            self.executed = []
+            self.rowcount = 2
+
+        def execute(self, statement, parameters=None):
+            self.executed.append((statement, parameters))
+            if "UPDATE kaltura_entries SET IsDeleted = 1" in statement:
+                stale_updates.append(parameters)
+
+        def close(self):
+            return None
+
+    class Connection:
+        def __init__(self) -> None:
+            self.cursor_instance = Cursor()
+
+        def cursor(self, dictionary=False):
+            return self.cursor_instance
+
+        def close(self):
+            return None
+
+    connection = Connection()
+    monkeypatch.setattr(manager, "connect", lambda: connection)
+
+    assert manager.sync_from_api(Client(), page_size=500) == ["entry-123"]
+    assert seen_entries == [{"id": "entry-123"}]
+    assert stale_updates
 
 
 def test_sdk_enum_values_are_unwrapped_for_integer_columns() -> None:

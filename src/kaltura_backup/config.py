@@ -61,10 +61,10 @@ SaveAttachments = false
 
 [mysql]
 host = localhost
-database = backup_10206
+database = backup_123
 root_user = root
 root_password = 
-user = backupuser10206
+user = backupuser123
 password = 
 
 [metadata_profiles]
